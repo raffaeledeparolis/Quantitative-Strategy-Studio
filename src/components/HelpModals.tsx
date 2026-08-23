@@ -49,13 +49,13 @@ const HELP_STEPS = [
     note: "Ogni trade viene convertito in rendimento % sull'equity del momento, così il ricampionamento è coerente con il sizing a rischio.",
   },
   {
-    n: 6, icon: "🔬", title: "Analisi di Scenario",
+    n: 6, icon: "🔬", title: "Scenario & Ottimizzazione",
     content: [
-      "I parametri numerici rilevati nelle regole (soglie degli indicatori, moltiplicatori ATR/R, percentuali di chiusura parziale) vengono esposti come variabili configurabili. Per ognuno puoi impostare il range di variazione e il numero di passi. Il tool ri-esegue il backtest per ogni valore mantenendo tutti gli altri invariati (uno alla volta — sweep univariato).",
-      "Risultati: grafico di sensitività per metrica selezionabile, mappa di sensitività (tutti i parametri × tutte le metriche) colorata per livello di impatto, tabella valori completa.",
-      "Il pulsante Ottimizzazione applica simultaneamente tutti i valori ottimali trovati e confronta base vs ottimizzato con grafico e tabella.",
+      "Lo Step 6 offre due metodologie complementari chiaramente distinte:",
+      "1. Sensitività 1D (Monovariata): analizza la stabilità di ogni singolo parametro a parità degli altri (ceteris paribus). Consente di individuare la presenza di plateau stabili ed evitare picchi isolati vulnerabili all'overfitting. Include curve 1D interattive per 7 metriche e la mappa d'impatto complessiva.",
+      "2. Ottimizzazione Multi-parametrica: ricerca la migliore combinazione congiunta di parametri tramite Grid Search (congiunta cartesiana con heatmap di superficie 2D) o Coordinate Descent (iterativa veloce). Permette di selezionare liberamente i parametri da ottimizzare, scegliere tra 8 funzioni obiettivo e confrontare la strategia base vs ottimizzata con curva di equity e delta prestazioni.",
     ],
-    note: "L'ottimizzazione è in-sample: stima cosa sarebbe successo su questi dati storici, non necessariamente su quelli futuri. Usa il Walk-Forward per validare.",
+    note: "L'ottimizzazione è calcolata In-Sample: stima i migliori parametri sui dati storici. Per validare l'effettiva robustezza ed evitare il curve-fitting, passa allo Step 7: Walk-Forward Validation.",
   },
   {
     n: 7, icon: "⏩", title: "Walk-Forward",
