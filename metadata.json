@@ -1,0 +1,6 @@
+{
+  "name": "Strategy Lab — Motore di Backtest",
+  "description": "Laboratorio completo per backtest di trading quantitativo, analisi Monte Carlo, analisi di scenario e walk-forward optimization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
