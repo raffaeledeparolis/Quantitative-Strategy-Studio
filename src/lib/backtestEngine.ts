@@ -394,7 +394,12 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
           } else if (t.legIdx !== undefined) {
             const tpLegObj = tpLegs[t.legIdx];
             const px = t.gapFill ? barOpen : tpLegObj.level;
-            const q = Math.min(qtyTotal * (tpLegObj.closePct / 100), qtyRemaining);
+            const hasSignalExitRules = signalExitRules.length > 0;
+            const hadPriorSignalExit = legs.some((l) => l.reason.startsWith("ExitSignal"));
+
+            // Se il prezzo incontra il TP prima della condizione di uscita (Exit Signal), viene chiusa l'intera posizione (100%)
+            const closeEntirePosition = (hasSignalExitRules && !hadPriorSignalExit) || tpLegObj.closePct >= 100;
+            const q = closeEntirePosition ? qtyRemaining : Math.min(qtyTotal * (tpLegObj.closePct / 100), qtyRemaining);
             const fill = direction === "long" ? px - half : px + half;
             const legPnl = q * (direction === "long" ? fill - entryPrice : entryPrice - fill);
             pnlTrade += legPnl;
