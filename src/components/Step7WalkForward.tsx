@@ -1,21 +1,24 @@
 import React, { useState, useMemo } from "react";
 import {
-  LineChart, Line, AreaChart, Area, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+  LineChart, Line, AreaChart, Area, BarChart, Bar, ComposedChart, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
   FastForward, PlayCircle, Loader2, RotateCcw, ChevronLeft, Info, CheckCircle2,
   AlertTriangle, Sparkles, Sliders, ShieldCheck, ChevronDown, ChevronUp, Layers, TrendingUp,
   TrendingDown, CheckSquare, Square, Activity, Target, Award, PieChart, BarChart2,
-  ShieldAlert, ArrowUpRight, ArrowDownRight, Scale, Clock, Compass
+  ShieldAlert, ArrowUpRight, ArrowDownRight, Scale, Clock, Compass, Shuffle, Dice5,
+  FileSpreadsheet, BarChart3, RefreshCw
 } from "lucide-react";
 import { C, FONT_SERIF, FONT_SANS, FONT_MONO, Card, Button, Field, KPI, inputStyle } from "./CommonUI";
 import {
-  Bar as BarData, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, TweakableParam, SweepConfigItem, WfoParamSummary
+  Bar as BarData, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, TweakableParam, SweepConfigItem, WfoParamSummary,
+  Trade, MonteCarloResult, MonteCarloConfig, HistogramBin
 } from "../types";
 import { fmtPct, fmtNum, fmtMoney, fmtDT } from "../lib/csvHelper";
 import { downsample } from "../lib/backtestEngine";
 import { OPTIM_OBJECTIVES, getParamGridValues } from "../lib/scenarioEngine";
 import { computeChainedOosMetrics } from "../lib/walkForwardEngine";
+import { runMonteCarlo, rankPercentile, percentile } from "../lib/monteCarloEngine";
 
 interface Step7WalkForwardProps {
   bars: BarData[];
@@ -331,6 +334,75 @@ export function Step7WalkForward({
       };
     });
   }, [activeTrajectoryParam, wfResult]);
+
+  // --- CHAINED OOS MONTE CARLO ANALYSIS STATE & COMPUTATIONS ---
+  const [oosMcConfig, setOosMcConfig] = useState<MonteCarloConfig>({
+    iterations: 2000,
+    method: "bootstrap",
+    ruinThresholdPct: 50,
+  });
+  const [oosMcView, setOosMcView] = useState<"fanchart" | "returns" | "dd" | "stats">("fanchart");
+  const [oosMcRunning, setOosMcRunning] = useState<boolean>(false);
+  const [oosMcTrigger, setOosMcTrigger] = useState<number>(0);
+
+  const allOosTrades = useMemo(() => {
+    if (!wfResult?.results) return [];
+    const list: Trade[] = [];
+    wfResult.results.forEach((r) => {
+      if (r.oosTrades && r.oosTrades.length > 0) {
+        list.push(...r.oosTrades);
+      }
+    });
+    return list.sort((a, b) => a.entryDt - b.entryDt);
+  }, [wfResult]);
+
+  const oosMcResult = useMemo(() => {
+    if (!allOosTrades || allOosTrades.length === 0) return null;
+    return runMonteCarlo(allOosTrades, mm.initialCapital, oosMcConfig);
+  }, [allOosTrades, mm.initialCapital, oosMcConfig, oosMcTrigger]);
+
+  const actualOosEquitySeries = useMemo(() => {
+    if (!allOosTrades || allOosTrades.length === 0) return [mm.initialCapital];
+    let eq = mm.initialCapital;
+    const arr = [eq];
+    for (const t of allOosTrades) {
+      eq += t.pnl;
+      arr.push(eq);
+    }
+    return arr;
+  }, [allOosTrades, mm.initialCapital]);
+
+  const oosFanChartData = useMemo(() => {
+    if (!oosMcResult) return [];
+    return oosMcResult.bands.map((b, i) => {
+      const actual = actualOosEquitySeries[i];
+      return {
+        ...b,
+        actual,
+        baseP5: b.p5,
+        bandP5P25: b.p25 - b.p5,
+        bandP25P75: b.p75 - b.p25,
+        bandP75P95: b.p95 - b.p75,
+        outOfBand: actual != null && (actual < b.p5 || actual > b.p95),
+      };
+    });
+  }, [oosMcResult, actualOosEquitySeries]);
+
+  const oosOutOfBandCount = useMemo(() => oosFanChartData.filter((d) => d.outOfBand).length, [oosFanChartData]);
+  const oosOutOfBandPct = oosFanChartData.length ? oosOutOfBandCount / oosFanChartData.length : 0;
+
+  const oosMcRank = useMemo(() => {
+    if (!oosMcResult || !chainedMetrics) return 50;
+    return rankPercentile(oosMcResult.sortedReturns, chainedMetrics.netProfitPct);
+  }, [oosMcResult, chainedMetrics]);
+
+  const handleRunOosMonteCarlo = () => {
+    setOosMcRunning(true);
+    setTimeout(() => {
+      setOosMcTrigger((prev) => prev + 1);
+      setOosMcRunning(false);
+    }, 150);
+  };
 
   const isWfoResult = wfResult?.mode === "wfo" || (wfResult?.wfoParamSummaries && wfResult.wfoParamSummaries.length > 0);
 
@@ -1671,6 +1743,576 @@ export function Step7WalkForward({
                       })}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {/* DEDICATED CHAINED OUT-OF-SAMPLE (OOS) MONTE CARLO ANALYSIS CARD */}
+          <Card style={{ marginBottom: 20, border: `1.5px solid ${C.primaryDark}33`, background: "#FFFFFF", boxShadow: "0 4px 14px rgba(0,0,0,0.03)" }}>
+            {/* Header & Controls */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ background: C.primaryLight, padding: 6, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Shuffle size={19} color={C.primaryDark} />
+                  </div>
+                  <div>
+                    <h3 style={{ fontFamily: FONT_SERIF, fontSize: 18, color: C.primaryDark, margin: 0 }}>
+                      Analisi Monte Carlo sulla Chained Out-Of-Sample (OOS)
+                    </h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, background: "#EEEEEA", color: C.primaryDark, padding: "2px 7px", borderRadius: 4, fontWeight: 700 }}>
+                        {allOosTrades.length} Trade OOS Concatenati
+                      </span>
+                      <span style={{ fontSize: 11, fontFamily: FONT_MONO, background: C.primaryLight, color: C.primaryDark, padding: "2px 7px", borderRadius: 4, fontWeight: 700 }}>
+                        {oosMcConfig.iterations.toLocaleString("it-IT")} Iterazioni ({oosMcConfig.method})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.muted, margin: "6px 0 0", maxWidth: 780, lineHeight: 1.4 }}>
+                  Stress-test stocastico applicato <b>esclusivamente alla sequenza di trade generati fuori campione</b> ({allOosTrades.length} trade).
+                  Valuta l'effetto-ordine (sequencing risk), i corridoi di dispersione dell'equity e la tenuta statistica della strategia in condizioni di mercato mai viste prima dal modello.
+                </p>
+              </div>
+
+              {/* Action Buttons & Fast Config Controls */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select
+                    value={oosMcConfig.iterations}
+                    onChange={(e) => setOosMcConfig((prev) => ({ ...prev, iterations: parseInt(e.target.value, 10) }))}
+                    style={{ ...inputStyle, padding: "4px 8px", fontSize: 11.5, height: 32, minWidth: 100 }}
+                  >
+                    <option value={500}>500 iter</option>
+                    <option value={1000}>1.000 iter</option>
+                    <option value={2000}>2.000 iter</option>
+                    <option value={5000}>5.000 iter</option>
+                    <option value={10000}>10.000 iter</option>
+                  </select>
+
+                  <select
+                    value={oosMcConfig.method}
+                    onChange={(e) => setOosMcConfig((prev) => ({ ...prev, method: e.target.value as "bootstrap" | "permutation" }))}
+                    style={{ ...inputStyle, padding: "4px 8px", fontSize: 11.5, height: 32, minWidth: 120 }}
+                  >
+                    <option value="bootstrap">Bootstrap</option>
+                    <option value="permutation">Permutazione</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={handleRunOosMonteCarlo}
+                    disabled={oosMcRunning || allOosTrades.length === 0}
+                    style={{
+                      fontFamily: FONT_SANS,
+                      fontSize: 12,
+                      padding: "6px 12px",
+                      borderRadius: 6,
+                      border: "none",
+                      background: C.primary,
+                      color: "#fff",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontWeight: 700,
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+                    }}
+                  >
+                    {oosMcRunning ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                    {oosMcRunning ? "Calcolo..." : "Ricalcola OOS"}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Small Sample Warning */}
+            {allOosTrades.length < 30 && (
+              <div style={{ background: C.amberLight, border: `1px solid ${C.amber}55`, borderRadius: 8, padding: "8px 12px", fontSize: 12, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                <AlertTriangle size={15} color={C.amber} style={{ flexShrink: 0 }} />
+                <span>
+                  Campione OOS ridotto ({allOosTrades.length} trade): con poche operazioni i corridoi di confidenza Monte Carlo tendono ad allargarsi. I risultati vanno considerati indicativi.
+                </span>
+              </div>
+            )}
+
+            {/* 6 High-Impact Monte Carlo KPI Cards */}
+            {oosMcResult && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 16 }}>
+                {/* 1. Risk of Ruin */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Rischio di Rovina OOS</span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "1px 5px",
+                        borderRadius: 3,
+                        background: oosMcResult.riskOfRuin === 0 ? C.primaryLight : oosMcResult.riskOfRuin <= 0.05 ? C.amberLight : C.redLight,
+                        color: oosMcResult.riskOfRuin === 0 ? C.primaryDark : oosMcResult.riskOfRuin <= 0.05 ? C.amber : C.red,
+                      }}
+                    >
+                      {oosMcResult.riskOfRuin === 0 ? "0% Rischio ✓" : oosMcResult.riskOfRuin <= 0.05 ? "Accettabile" : "Critico ⚠️"}
+                    </span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: oosMcResult.riskOfRuin > 0.05 ? C.red : C.primaryDark, marginTop: 4 }}>
+                    {fmtPct(oosMcResult.riskOfRuin)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Prob. di toccare il -{oosMcConfig.ruinThresholdPct}% del capitale
+                  </div>
+                </div>
+
+                {/* 2. Prob Positiva */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Prob. Rendimento &gt; 0</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Successo OOS</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: oosMcResult.probPositive >= 0.85 ? C.primaryDark : oosMcResult.probPositive >= 0.6 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtPct(oosMcResult.probPositive)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Simulazioni chiuse in profitto
+                  </div>
+                </div>
+
+                {/* 3. Rendimento OOS Mediano */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Rendimento OOS Mediano</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>p50 (Mediana)</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: oosMcResult.returnStats.p50 >= 0 ? C.primaryDark : C.red, marginTop: 4 }}>
+                    {fmtPct(oosMcResult.returnStats.p50)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Banda 90%: {fmtPct(oosMcResult.returnStats.p5)} a {fmtPct(oosMcResult.returnStats.p95)}
+                  </div>
+                </div>
+
+                {/* 4. Max Drawdown Mediano & Worst-case */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Max Drawdown OOS</span>
+                    <span style={{ fontSize: 10, color: C.red }}>p95 Worst-case</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: C.text, marginTop: 4 }}>
+                    {fmtPct(oosMcResult.ddStats.p50)}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: C.red, marginLeft: 6 }}>
+                      (p95: {fmtPct(oosMcResult.ddStats.p95)})
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Mediano vs scenario peggiore 5%
+                  </div>
+                </div>
+
+                {/* 5. Profit Factor Worst-case */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS Profit Factor (p5)</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Stress 5%</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: oosMcResult.pfStats.p5 >= 1.2 ? C.primaryDark : oosMcResult.pfStats.p5 >= 1.0 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtNum(oosMcResult.pfStats.p5, 2)}
+                    <span style={{ fontSize: 12, fontWeight: 600, color: C.muted, marginLeft: 6 }}>
+                      (med: {fmtNum(oosMcResult.pfStats.p50, 2)})
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    PF minimo nel 95% dei casi
+                  </div>
+                </div>
+
+                {/* 6. Percentile Sequenza Reale OOS */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Collocazione Sequenza Reale</span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 700,
+                        padding: "1px 5px",
+                        borderRadius: 3,
+                        background: oosMcRank >= 25 && oosMcRank <= 75 ? C.primaryLight : oosMcRank > 85 ? C.amberLight : "#EEEEEA",
+                        color: oosMcRank >= 25 && oosMcRank <= 75 ? C.primaryDark : oosMcRank > 85 ? C.amber : C.text,
+                      }}
+                    >
+                      {oosMcRank >= 25 && oosMcRank <= 75 ? "Equilibrata ✓" : oosMcRank > 85 ? "Favorita 🍀" : "Prudente"}
+                    </span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: C.primaryDark, marginTop: 4 }}>
+                    {fmtNum(oosMcRank, 0)}° percentile
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Reale: {chainedMetrics ? fmtPct(chainedMetrics.netProfitPct) : "—"} vs simulazioni
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sub-view Navigation Switcher */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8, borderBottom: `1px solid ${C.border}`, paddingBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", background: "#F1EFE8", padding: 3, borderRadius: 7 }}>
+                <button
+                  type="button"
+                  onClick={() => setOosMcView("fanchart")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 12,
+                    fontWeight: oosMcView === "fanchart" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: oosMcView === "fanchart" ? "#FFFFFF" : "transparent",
+                    color: oosMcView === "fanchart" ? C.primaryDark : C.muted,
+                    boxShadow: oosMcView === "fanchart" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <TrendingUp size={13} /> Cono di Confidenza (Fan Chart)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setOosMcView("returns")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 12,
+                    fontWeight: oosMcView === "returns" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: oosMcView === "returns" ? "#FFFFFF" : "transparent",
+                    color: oosMcView === "returns" ? C.primaryDark : C.muted,
+                    boxShadow: oosMcView === "returns" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <BarChart2 size={13} /> Distribuzione Rendimenti
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setOosMcView("dd")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 12,
+                    fontWeight: oosMcView === "dd" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: oosMcView === "dd" ? "#FFFFFF" : "transparent",
+                    color: oosMcView === "dd" ? C.primaryDark : C.muted,
+                    boxShadow: oosMcView === "dd" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <ShieldAlert size={13} /> Distribuzione Max DD
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setOosMcView("stats")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 12,
+                    fontWeight: oosMcView === "stats" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: oosMcView === "stats" ? "#FFFFFF" : "transparent",
+                    color: oosMcView === "stats" ? C.primaryDark : C.muted,
+                    boxShadow: oosMcView === "stats" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <FileSpreadsheet size={13} /> Tabella Percentili
+                </button>
+              </div>
+
+              {/* View Status Note */}
+              <div style={{ fontSize: 11.5, color: C.muted }}>
+                {oosMcView === "fanchart" && "Proiezioni stocastiche dell'equity OOS lungo la sequenza di operazioni"}
+                {oosMcView === "returns" && "Istogramma di densità probabilistica dei rendimenti finali OOS"}
+                {oosMcView === "dd" && "Istogramma di frequenza della massima perdita picco-valle simulata"}
+                {oosMcView === "stats" && "Riepilogo statistico completo dei percentili di rischio e performance"}
+              </div>
+            </div>
+
+            {/* Dynamic View Content */}
+            {oosMcResult && (
+              <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px", marginBottom: 14 }}>
+                {/* View 1: Fan Chart */}
+                {oosMcView === "fanchart" && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark }}>
+                          Cono di Dispersione dell'Equity OOS (Fan Chart)
+                        </div>
+                        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+                          Le fasce colorate evidenziano i corridoi di probabilità dell'equity lungo i {allOosTrades.length} trade OOS; la linea nera è la sequenza reale osservata.
+                        </div>
+                      </div>
+
+                      {/* Legend */}
+                      <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 11, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ width: 12, height: 8, background: C.primary, opacity: 0.16, borderRadius: 2 }} />
+                          <span style={{ color: C.muted }}>Banda 5°–95° perc.</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ width: 12, height: 8, background: C.primary, opacity: 0.38, borderRadius: 2 }} />
+                          <span style={{ color: C.muted }}>Banda 25°–75° perc.</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ width: 12, height: 2, background: C.amber, borderTop: `2px dashed ${C.amber}` }} />
+                          <span style={{ color: C.muted }}>Mediana simulata</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ width: 12, height: 2.5, background: C.text, borderRadius: 1 }} />
+                          <span style={{ color: C.text, fontWeight: 700 }}>Sequenza Reale OOS</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {oosOutOfBandCount > 0 && (
+                      <div style={{ background: C.amberLight, border: `1px solid ${C.amber}55`, borderRadius: 6, padding: "6px 10px", fontSize: 11.5, marginBottom: 10 }}>
+                        <AlertTriangle size={12} color={C.amber} style={{ verticalAlign: -1, marginRight: 5 }} />
+                        La sequenza reale esce dalla banda di confidenza 5°–95° in {oosOutOfBandCount} trade su {oosFanChartData.length} ({fmtPct(oosOutOfBandPct, 1)}).
+                      </div>
+                    )}
+
+                    <ResponsiveContainer width="100%" height={280}>
+                      <ComposedChart data={oosFanChartData} margin={{ top: 10, right: 15, left: 5, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis dataKey="step" tick={{ fontSize: 10 }} label={{ value: "Trade OOS #", position: "insideBottom", offset: -3, fontSize: 10.5, fill: C.muted }} />
+                        <YAxis tick={{ fontSize: 10 }} width={54} tickFormatter={(v) => (v / 1000).toFixed(0) + "k €"} domain={['auto', 'auto']} />
+                        <Tooltip
+                          content={({ active, payload, label }) => {
+                            if (!active || !payload || !payload.length) return null;
+                            const d = payload[0]?.payload;
+                            if (!d) return null;
+                            return (
+                              <div style={{ background: "#fff", border: `1px solid ${C.border}`, borderRadius: 7, padding: "8px 12px", fontFamily: FONT_SANS, fontSize: 11.5, boxShadow: "0 4px 12px rgba(0,0,0,0.1)" }}>
+                                <div style={{ fontWeight: 700, color: C.primaryDark, marginBottom: 4 }}>Trade OOS #{label}</div>
+                                <div style={{ display: "grid", gridTemplateColumns: "auto auto", columnGap: 10, rowGap: 3 }}>
+                                  <span style={{ color: C.text, fontWeight: 700 }}>Reale OOS:</span>
+                                  <span style={{ fontWeight: 700, color: C.text }}>{d.actual != null ? fmtMoney(d.actual) : "—"}</span>
+                                  <span style={{ color: C.amber }}>Mediana simulata:</span>
+                                  <span>{fmtMoney(d.p50)}</span>
+                                  <span style={{ color: C.muted }}>Banda 25°–75°:</span>
+                                  <span>{fmtMoney(d.p25)} – {fmtMoney(d.p75)}</span>
+                                  <span style={{ color: C.muted }}>Banda 5°–95°:</span>
+                                  <span>{fmtMoney(d.p5)} – {fmtMoney(d.p95)}</span>
+                                </div>
+                                {d.outOfBand && <div style={{ marginTop: 4, color: C.amber, fontSize: 10.5, fontWeight: 700 }}>⚠️ Fuori dalla banda 5°–95°</div>}
+                              </div>
+                            );
+                          }}
+                        />
+                        <ReferenceLine y={mm.initialCapital} stroke="#999" strokeDasharray="4 4" label={{ value: "Capitale Iniziale", fontSize: 9.5, fill: "#888", position: "insideBottomLeft" }} />
+
+                        <Area dataKey="baseP5" stackId="band" stroke="none" fill="transparent" isAnimationActive={false} />
+                        <Area dataKey="bandP5P25" stackId="band" stroke="none" fill={C.primary} fillOpacity={0.16} isAnimationActive={false} />
+                        <Area dataKey="bandP25P75" stackId="band" stroke="none" fill={C.primary} fillOpacity={0.38} isAnimationActive={false} />
+                        <Area dataKey="bandP75P95" stackId="band" stroke="none" fill={C.primary} fillOpacity={0.16} isAnimationActive={false} />
+
+                        <Line dataKey="p50" stroke={C.amber} strokeDasharray="5 4" dot={false} strokeWidth={1.8} isAnimationActive={false} />
+                        <Line dataKey="actual" stroke={C.text} dot={false} strokeWidth={2.4} isAnimationActive={false} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* View 2: Returns Distribution Histogram */}
+                {oosMcView === "returns" && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark }}>
+                          Distribuzione di Frequenza dei Rendimenti Totali OOS
+                        </div>
+                        <div style={{ fontSize: 11.5, color: C.muted }}>
+                          Mediana: <b>{fmtPct(oosMcResult.returnStats.p50)}</b> · Min: {fmtPct(oosMcResult.returnStats.min)} · Max: {fmtPct(oosMcResult.returnStats.max)}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: C.muted }}>
+                        Rendimento Storico Reale OOS: <b style={{ color: C.primaryDark }}>{chainedMetrics ? fmtPct(chainedMetrics.netProfitPct) : "—"}</b>
+                      </div>
+                    </div>
+
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={oosMcResult.histReturns} margin={{ top: 15, right: 15, left: 5, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 10 }} tickFormatter={(v) => fmtPct(v, 0)} />
+                        <YAxis tick={{ fontSize: 10 }} width={38} />
+                        <Tooltip formatter={(v: any) => [v, "Simulazioni"]} labelFormatter={(v: any) => `Rendimento OOS: ${fmtPct(v)}`} />
+                        {chainedMetrics && (
+                          <ReferenceLine x={chainedMetrics.netProfitPct} stroke={C.primaryDark} strokeWidth={2} strokeDasharray="4 2" label={{ value: `Reale OOS (${fmtPct(chainedMetrics.netProfitPct)})`, fontSize: 10, fill: C.primaryDark, position: "top" }} />
+                        )}
+                        <ReferenceLine x={oosMcResult.returnStats.p50} stroke={C.amber} strokeWidth={1.8} strokeDasharray="3 3" label={{ value: `Mediana MC (${fmtPct(oosMcResult.returnStats.p50)})`, fontSize: 10, fill: C.amber, position: "top" }} />
+                        <Bar dataKey="count" fill={C.primary} fillOpacity={0.65} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* View 3: Max Drawdown Distribution Histogram */}
+                {oosMcView === "dd" && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 6 }}>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.red }}>
+                          Distribuzione di Frequenza dei Maximum Drawdown OOS
+                        </div>
+                        <div style={{ fontSize: 11.5, color: C.muted }}>
+                          Mediana: <b>{fmtPct(oosMcResult.ddStats.p50)}</b> · 95° Percentile (Worst-case): <b style={{ color: C.red }}>{fmtPct(oosMcResult.ddStats.p95)}</b>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: C.muted }}>
+                        Max DD Storico Reale OOS: <b style={{ color: C.red }}>{chainedMetrics ? fmtPct(chainedMetrics.maxDDPct) : "—"}</b>
+                      </div>
+                    </div>
+
+                    <ResponsiveContainer width="100%" height={260}>
+                      <BarChart data={oosMcResult.histDD} margin={{ top: 15, right: 15, left: 5, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                        <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 10 }} tickFormatter={(v) => fmtPct(v, 0)} />
+                        <YAxis tick={{ fontSize: 10 }} width={38} />
+                        <Tooltip formatter={(v: any) => [v, "Simulazioni"]} labelFormatter={(v: any) => `Max Drawdown: ${fmtPct(v)}`} />
+                        {chainedMetrics && (
+                          <ReferenceLine x={chainedMetrics.maxDDPct} stroke={C.red} strokeWidth={2} strokeDasharray="4 2" label={{ value: `Reale OOS (${fmtPct(chainedMetrics.maxDDPct)})`, fontSize: 10, fill: C.red, position: "top" }} />
+                        )}
+                        <ReferenceLine x={oosMcResult.ddStats.p95} stroke="#8B0000" strokeWidth={1.8} strokeDasharray="3 3" label={{ value: `p95 Worst (${fmtPct(oosMcResult.ddStats.p95)})`, fontSize: 10, fill: "#8B0000", position: "top" }} />
+                        <Bar dataKey="count" fill={C.red} fillOpacity={0.55} radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                {/* View 4: Full Percentiles Table */}
+                {oosMcView === "stats" && (
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark, marginBottom: 8 }}>
+                      Tabella Analitica Completa dei Percentili Monte Carlo su Dati Concatenati OOS
+                    </div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: FONT_MONO }}>
+                        <thead>
+                          <tr style={{ background: "#F1EFE8", borderBottom: `2px solid ${C.border}` }}>
+                            <th style={{ textAlign: "left", padding: "7px 10px", fontFamily: FONT_SANS, color: C.primaryDark, fontSize: 11.5 }}>Metrica OOS</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.primaryDark, fontSize: 11.5 }}>Reale OOS</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Min</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>p5 (Worst)</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>p25</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.primaryDark, fontSize: 11 }}>p50 (Mediana)</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>p75</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>p95 (Best)</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Max</th>
+                            <th style={{ textAlign: "right", padding: "7px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Media</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                            <td style={{ padding: "8px 10px", fontFamily: FONT_SANS, fontWeight: 700, color: C.text }}>Rendimento Totale (%)</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: (chainedMetrics?.netProfitPct ?? 0) >= 0 ? C.primaryDark : C.red }}>
+                              {chainedMetrics ? fmtPct(chainedMetrics.netProfitPct) : "—"}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.returnStats.min)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: oosMcResult.returnStats.p5 < 0 ? C.red : C.text }}>{fmtPct(oosMcResult.returnStats.p5)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.returnStats.p25)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: C.primaryDark }}>{fmtPct(oosMcResult.returnStats.p50)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.returnStats.p75)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.primaryDark }}>{fmtPct(oosMcResult.returnStats.p95)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.returnStats.max)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.returnStats.mean)}</td>
+                          </tr>
+
+                          <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#FAF8F2" }}>
+                            <td style={{ padding: "8px 10px", fontFamily: FONT_SANS, fontWeight: 700, color: C.text }}>Max Drawdown (%)</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: C.red }}>
+                              {chainedMetrics ? fmtPct(chainedMetrics.maxDDPct) : "—"}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.ddStats.min)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.ddStats.p5)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.ddStats.p25)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: C.text }}>{fmtPct(oosMcResult.ddStats.p50)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.ddStats.p75)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: C.red }}>{fmtPct(oosMcResult.ddStats.p95)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.red }}>{fmtPct(oosMcResult.ddStats.max)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.ddStats.mean)}</td>
+                          </tr>
+
+                          <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                            <td style={{ padding: "8px 10px", fontFamily: FONT_SANS, fontWeight: 700, color: C.text }}>Profit Factor</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: (chainedMetrics?.profitFactor ?? 0) >= 1.3 ? C.primaryDark : C.text }}>
+                              {chainedMetrics ? fmtNum(chainedMetrics.profitFactor, 2) : "—"}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtNum(oosMcResult.pfStats.min, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: oosMcResult.pfStats.p5 < 1.0 ? C.red : C.text }}>{fmtNum(oosMcResult.pfStats.p5, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtNum(oosMcResult.pfStats.p25, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700, color: C.primaryDark }}>{fmtNum(oosMcResult.pfStats.p50, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtNum(oosMcResult.pfStats.p75, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.primaryDark }}>{fmtNum(oosMcResult.pfStats.p95, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtNum(oosMcResult.pfStats.max, 2)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtNum(oosMcResult.pfStats.mean, 2)}</td>
+                          </tr>
+
+                          <tr style={{ borderBottom: `1px solid ${C.border}`, background: "#FAF8F2" }}>
+                            <td style={{ padding: "8px 10px", fontFamily: FONT_SANS, fontWeight: 700, color: C.text }}>Drawdown Giornaliero Medio (%)</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: C.text }}>
+                              {chainedMetrics ? fmtPct(chainedMetrics.avgDrawdownPct) : "—"}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.avgDailyDDStats.min)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.red }}>{fmtPct(oosMcResult.avgDailyDDStats.p5)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.avgDailyDDStats.p25)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 700 }}>{fmtPct(oosMcResult.avgDailyDDStats.p50)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.avgDailyDDStats.p75)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{fmtPct(oosMcResult.avgDailyDDStats.p95)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.avgDailyDDStats.max)}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", color: C.muted }}>{fmtPct(oosMcResult.avgDailyDDStats.mean)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Diagnostic Synthesis Footer */}
+            {oosMcResult && (
+              <div style={{ background: "#F5F8F4", border: `1px solid ${C.primary}33`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "flex-start", gap: 10 }}>
+                <CheckCircle2 size={16} color={C.primary} style={{ marginTop: 2, flexShrink: 0 }} />
+                <div style={{ fontSize: 12, color: C.primaryDark, lineHeight: 1.45 }}>
+                  <b>Diagnosi Monte Carlo OOS:</b> Eseguite {oosMcResult.iterations.toLocaleString("it-IT")} simulazioni stocastiche sui {allOosTrades.length} trade fuori campione.
+                  {oosMcResult.riskOfRuin === 0 ? " Il rischio di rovina simulato è nullo (0.0%)." : ` Il rischio di rovina stimato è pari a ${fmtPct(oosMcResult.riskOfRuin)}.`}
+                  {oosMcRank >= 25 && oosMcRank <= 75
+                    ? ` La sequenza reale (${fmtPct(chainedMetrics?.netProfitPct ?? 0)}) si colloca al ${fmtNum(oosMcRank, 0)}° percentile, confermando che i risultati OOS non dipendono da una sequenza temporale insolitamente fortunata.`
+                    : oosMcRank > 85
+                    ? ` La sequenza reale si colloca al ${fmtNum(oosMcRank, 0)}° percentile (fascia alta), indicando che l'ordine cronologico storico è stato moderatamente favorevole rispetto alla mediana stocastica.`
+                    : ` La sequenza reale si colloca al ${fmtNum(oosMcRank, 0)}° percentile (fascia conservativa), mostrando che il risultato effettivo è stato prudente rispetto a molte combinazioni simulate.`}
+                  {oosMcResult.pfStats.p5 >= 1.0
+                    ? ` Nello scenario avverso al 95% (p5), il Profit Factor OOS si mantiene sopra 1.0 (${fmtNum(oosMcResult.pfStats.p5, 2)}), a riprova della robustezza intrinseca del vantaggio statistico.`
+                    : ` Nello scenario di stress p5 il Profit Factor scende a ${fmtNum(oosMcResult.pfStats.p5, 2)}, evidenziando la necessità di rispettare una corretta diversificazione e gestione del rischio.`}
                 </div>
               </div>
             )}
