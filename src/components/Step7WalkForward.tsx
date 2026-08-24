@@ -1,22 +1,24 @@
 import React, { useState, useMemo } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
+  LineChart, Line, AreaChart, Area, BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
 } from "recharts";
 import {
   FastForward, PlayCircle, Loader2, RotateCcw, ChevronLeft, Info, CheckCircle2,
   AlertTriangle, Sparkles, Sliders, ShieldCheck, ChevronDown, ChevronUp, Layers, TrendingUp,
-  CheckSquare, Square
+  TrendingDown, CheckSquare, Square, Activity, Target, Award, PieChart, BarChart2,
+  ShieldAlert, ArrowUpRight, ArrowDownRight, Scale, Clock, Compass
 } from "lucide-react";
 import { C, FONT_SERIF, FONT_SANS, FONT_MONO, Card, Button, Field, KPI, inputStyle } from "./CommonUI";
 import {
-  Bar, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, TweakableParam, SweepConfigItem, WfoParamSummary
+  Bar as BarData, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, TweakableParam, SweepConfigItem, WfoParamSummary
 } from "../types";
 import { fmtPct, fmtNum, fmtMoney, fmtDT } from "../lib/csvHelper";
 import { downsample } from "../lib/backtestEngine";
 import { OPTIM_OBJECTIVES, getParamGridValues } from "../lib/scenarioEngine";
+import { computeChainedOosMetrics } from "../lib/walkForwardEngine";
 
 interface Step7WalkForwardProps {
-  bars: Bar[];
+  bars: BarData[];
   rules: StrategyRules;
   mm: MoneyManagement;
   params: TweakableParam[];
@@ -57,6 +59,7 @@ export function Step7WalkForward({
   const [selectedParamForTrajectory, setSelectedParamForTrajectory] = useState<string>("");
   const [expandedFoldIndex, setExpandedFoldIndex] = useState<number | null>(null);
   const [showFoldMatrix, setShowFoldMatrix] = useState<boolean>(true);
+  const [chainedChartView, setChainedChartView] = useState<"equity" | "underwater" | "distribution" | "windows">("equity");
 
   const totalBars = bars.length;
 
@@ -101,6 +104,205 @@ export function Step7WalkForward({
   const chainChartData = useMemo(() => {
     if (!wfResult?.chainPoints) return [];
     return downsample(wfResult.chainPoints, 500);
+  }, [wfResult]);
+
+  const chainedMetrics = useMemo(() => {
+    if (wfResult?.chainedMetrics) return wfResult.chainedMetrics;
+    if (wfResult?.results) {
+      return computeChainedOosMetrics(wfResult.results, mm.initialCapital, bars);
+    }
+    return null;
+  }, [wfResult, mm.initialCapital, bars]);
+
+  // Robustness Score & Composite Grading Model
+  const robustnessAssessment = useMemo(() => {
+    if (!wfResult || !chainedMetrics) return null;
+
+    const effRatio = wfResult.efficiencyRatio ?? 0;
+    const oosPf = chainedMetrics.profitFactor;
+    const pctProfitable = chainedMetrics.pctProfitableWindows;
+    const maxDdPct = chainedMetrics.maxDDPct;
+    const recFactor = chainedMetrics.recoveryFactor;
+    const oosSharpe = chainedMetrics.sharpeAnnual;
+
+    // Component 1: Efficiency Ratio (Max 25 pts)
+    // Measures preservation of IS performance in OOS
+    let scoreEff = 0;
+    if (effRatio >= 0.85) scoreEff = 25;
+    else if (effRatio >= 0.70) scoreEff = 21;
+    else if (effRatio >= 0.55) scoreEff = 17;
+    else if (effRatio >= 0.40) scoreEff = 12;
+    else if (effRatio >= 0.25) scoreEff = 6;
+    else scoreEff = Math.max(0, Math.round(effRatio * 20));
+
+    // Component 2: OOS Profit Factor & Expectancy (Max 20 pts)
+    let scorePf = 0;
+    if (oosPf >= 2.0) scorePf = 20;
+    else if (oosPf >= 1.6) scorePf = 17;
+    else if (oosPf >= 1.3) scorePf = 14;
+    else if (oosPf >= 1.1) scorePf = 10;
+    else if (oosPf >= 1.0) scorePf = 6;
+    else if (oosPf >= 0.8) scorePf = 2;
+    else scorePf = 0;
+
+    // Component 3: Consistency of Windows / Profitable Folds (Max 20 pts)
+    let scoreConsistency = 0;
+    if (pctProfitable >= 85) scoreConsistency = 20;
+    else if (pctProfitable >= 70) scoreConsistency = 16;
+    else if (pctProfitable >= 55) scoreConsistency = 12;
+    else if (pctProfitable >= 40) scoreConsistency = 7;
+    else scoreConsistency = 2;
+
+    // Component 4: Drawdown & Recovery (Max 20 pts)
+    let scoreRisk = 0;
+    let ddSubScore = 0;
+    if (maxDdPct <= 0.08) ddSubScore = 10;
+    else if (maxDdPct <= 0.15) ddSubScore = 8;
+    else if (maxDdPct <= 0.25) ddSubScore = 5;
+    else if (maxDdPct <= 0.35) ddSubScore = 2;
+    else ddSubScore = 0;
+
+    let recSubScore = 0;
+    if (recFactor >= 3.0) recSubScore = 10;
+    else if (recFactor >= 2.0) recSubScore = 8;
+    else if (recFactor >= 1.2) recSubScore = 5;
+    else if (recFactor >= 0.8) recSubScore = 3;
+    else recSubScore = 0;
+    scoreRisk = ddSubScore + recSubScore;
+
+    // Component 5: Risk-Adjusted Quality / Sharpe & Sortino (Max 15 pts)
+    let scoreQuality = 0;
+    if (oosSharpe >= 1.5) scoreQuality = 15;
+    else if (oosSharpe >= 1.1) scoreQuality = 12;
+    else if (oosSharpe >= 0.7) scoreQuality = 9;
+    else if (oosSharpe >= 0.4) scoreQuality = 5;
+    else if (oosSharpe > 0) scoreQuality = 2;
+    else scoreQuality = 0;
+
+    const totalScore = Math.min(100, Math.max(0, scoreEff + scorePf + scoreConsistency + scoreRisk + scoreQuality));
+
+    let grade: { label: string; verdict: string; color: string; bgColor: string; borderColor: string; description: string; recommendation: string };
+    if (totalScore >= 85) {
+      grade = {
+        label: "ROBUSTEZZA ECCELLENTE (GRADE A+)",
+        verdict: "Strategia Estremamente Solida e Resiliente",
+        color: "#1E4620",
+        bgColor: "#E8F5E9",
+        borderColor: "#81C784",
+        description: "La strategia dimostra un'elevata persistenza del vantaggio competitivo fuori campione (OOS), con un'eccellente tenuta dell'Efficiency Ratio, drawdown controllati e una distribuzione omogenea dei profitti tra i vari cicli temporali.",
+        recommendation: "Idonea all'impiego operativo a mercato con gestione del rischio standard. I parametri hanno mostrato stabilità e bassa sensibilità all'overfitting.",
+      };
+    } else if (totalScore >= 70) {
+      grade = {
+        label: "ROBUSTEZZA BUONA / CONFERMATA (GRADE B)",
+        verdict: "Strategia Solida con Vantaggio OOS Confermato",
+        color: "#2E7D32",
+        bgColor: "#F1F8E9",
+        borderColor: "#AED581",
+        description: "Buona conservazione delle performance sui dati Out-Of-Sample. La maggioranza delle finestre temporali si chiude in utile e il profilo di drawdown si mantiene entro livelli gestibili.",
+        recommendation: "Pronta per il live trading o per una fase di paper trading di validazione. Monitorare periodicamente l'Efficiency Ratio se il mercato entra in regimi di eccezionale volatilità.",
+      };
+    } else if (totalScore >= 50) {
+      grade = {
+        label: "ROBUSTEZZA MODERATA / CONDIZIONATA (GRADE C)",
+        verdict: "Vantaggio OOS Marginale con Segnali di Degrado",
+        color: "#E65100",
+        bgColor: "#FFF3E0",
+        borderColor: "#FFB74D",
+        description: "Si osserva un degrado non trascurabile delle metriche nel passaggio da In-Sample a Out-Of-Sample. Alcuni fold presentano oscillazioni ampie o rendimenti sotto le attese.",
+        recommendation: "Si raccomanda cautela prima del trading reale. Considerare una semplificazione delle regole di ingresso/uscita, l'allargamento della finestra IS di training o la riduzione del numero di parametri liberi.",
+      };
+    } else {
+      grade = {
+        label: "ROBUSTEZZA INSUFFICIENTE / OVERFITTING (GRADE D)",
+        verdict: "Rischio Elevato di Sovra-Ottimizzazione (Curve-Fitting)",
+        color: "#C62828",
+        bgColor: "#FFEBEE",
+        borderColor: "#EF9A9A",
+        description: "Il modello fallisce nel generalizzare sui dati mai visti: le performance OOS crollano drasticamente rispetto a quelle IS (Efficiency Ratio basso o negativo), con drawdown elevati e scarsa regolarità tra i fold.",
+        recommendation: "Non idonea al live trading nella configurazione attuale. La strategia soffre verosimilmente di data-mining bias o eccessiva complessità dei parametri.",
+      };
+    }
+
+    const subScores = [
+      {
+        id: "eff",
+        title: "Efficienza OOS / IS (WFE)",
+        score: scoreEff,
+        maxScore: 25,
+        valueFormatted: fmtNum(effRatio, 2),
+        targetText: "Target ≥ 0.65",
+        status: scoreEff >= 17 ? "optimal" : scoreEff >= 12 ? "acceptable" : "warning",
+        hint: "Rapporto tra rendimento OOS e rendimento IS: misura la resistenza all'overfitting.",
+      },
+      {
+        id: "pf",
+        title: "Redditività OOS (Profit Factor & PnL)",
+        score: scorePf,
+        maxScore: 20,
+        valueFormatted: `PF ${fmtNum(oosPf, 2)} (${fmtMoney(chainedMetrics.netProfit)})`,
+        targetText: "Target PF ≥ 1.30",
+        status: scorePf >= 14 ? "optimal" : scorePf >= 10 ? "acceptable" : "warning",
+        hint: "Capacità di generare guadagni netti sui dati futuri concatenati.",
+      },
+      {
+        id: "consistency",
+        title: "Consistenza Finestre (% Profittevoli)",
+        score: scoreConsistency,
+        maxScore: 20,
+        valueFormatted: `${chainedMetrics.profitableWindowsCount}/${chainedMetrics.totalWindowsCount} (${fmtPct(pctProfitable / 100)})`,
+        targetText: "Target ≥ 70%",
+        status: scoreConsistency >= 16 ? "optimal" : scoreConsistency >= 12 ? "acceptable" : "warning",
+        hint: "Frazione di cicli OOS indipendenti chiusi con rendimento positivo.",
+      },
+      {
+        id: "risk",
+        title: "Controllo Rischio (Max DD & Recovery)",
+        score: scoreRisk,
+        maxScore: 20,
+        valueFormatted: `DD ${fmtPct(maxDdPct)} · Rec. Factor ${fmtNum(recFactor, 2)}`,
+        targetText: "DD ≤ 15% · Rec ≥ 1.5",
+        status: scoreRisk >= 15 ? "optimal" : scoreRisk >= 10 ? "acceptable" : "warning",
+        hint: "Contenimento del drawdown massimo e rapidità di recupero del capitale.",
+      },
+      {
+        id: "quality",
+        title: "Qualità Risk-Adjusted (Sharpe & Sortino)",
+        score: scoreQuality,
+        maxScore: 15,
+        valueFormatted: `Sharpe ${fmtNum(oosSharpe, 2)} · Sortino ${fmtNum(chainedMetrics.sortinoAnnual, 2)}`,
+        targetText: "Sharpe ≥ 1.0",
+        status: scoreQuality >= 12 ? "optimal" : scoreQuality >= 7 ? "acceptable" : "warning",
+        hint: "Rendimento normalizzato per la volatilità e il downside risk dei trade.",
+      },
+    ];
+
+    return {
+      totalScore,
+      grade,
+      subScores,
+    };
+  }, [wfResult, chainedMetrics]);
+
+  const underwaterChartData = useMemo(() => {
+    if (!chainedMetrics?.underwaterCurve) return [];
+    return downsample(chainedMetrics.underwaterCurve, 500);
+  }, [chainedMetrics]);
+
+  const oosWindowReturnsChartData = useMemo(() => {
+    if (!wfResult?.results) return [];
+    return wfResult.results.map((r) => {
+      const ret = (r.oos?.totalReturnPct ?? 0) * 100;
+      return {
+        label: r.label,
+        period: r.period,
+        returnPct: parseFloat(ret.toFixed(2)),
+        pnl: r.oosTrades.reduce((s, t) => s + t.pnl, 0),
+        isProfitable: ret > 0,
+        n: r.oos?.n ?? 0,
+        pf: r.oos?.profitFactor ?? 0,
+      };
+    });
   }, [wfResult]);
 
   // Sync selected param for stability trajectory chart
@@ -567,6 +769,222 @@ export function Step7WalkForward({
       {/* Results Section */}
       {wfResult && (
         <>
+          {/* COMPREHENSIVE ROBUSTNESS SCORECARD & VERDICT */}
+          {robustnessAssessment && (
+            <Card
+              style={{
+                marginBottom: 20,
+                border: `1.5px solid ${robustnessAssessment.grade.borderColor}`,
+                background: "#FFFFFF",
+                boxShadow: "0 4px 16px rgba(0,0,0,0.04)",
+                overflow: "hidden",
+                padding: 0,
+              }}
+            >
+              {/* Header Banner */}
+              <div
+                style={{
+                  background: robustnessAssessment.grade.bgColor,
+                  borderBottom: `1px solid ${robustnessAssessment.grade.borderColor}`,
+                  padding: "16px 20px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 14,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div
+                    style={{
+                      width: 52,
+                      height: 52,
+                      borderRadius: 12,
+                      background: "#FFFFFF",
+                      border: `2px solid ${robustnessAssessment.grade.borderColor}`,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      boxShadow: "0 2px 6px rgba(0,0,0,0.06)",
+                    }}
+                  >
+                    <Award size={22} color={robustnessAssessment.grade.color} />
+                    <span style={{ fontSize: 9.5, fontWeight: 800, fontFamily: FONT_MONO, color: robustnessAssessment.grade.color }}>
+                      {robustnessAssessment.totalScore}/100
+                    </span>
+                  </div>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 800,
+                          letterSpacing: "0.04em",
+                          fontFamily: FONT_SANS,
+                          color: "#FFFFFF",
+                          background: robustnessAssessment.grade.color,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {robustnessAssessment.grade.label}
+                      </span>
+                      <span style={{ fontSize: 11.5, color: C.muted, fontWeight: 600 }}>
+                        Score Complessivo di Robustezza Walk-Forward
+                      </span>
+                    </div>
+                    <h3
+                      style={{
+                        fontFamily: FONT_SERIF,
+                        fontSize: 19,
+                        color: robustnessAssessment.grade.color,
+                        margin: "4px 0 0",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {robustnessAssessment.grade.verdict}
+                    </h3>
+                  </div>
+                </div>
+
+                {/* Main Score Gauge */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    background: "#FFFFFF",
+                    padding: "8px 16px",
+                    borderRadius: 10,
+                    border: `1px solid ${robustnessAssessment.grade.borderColor}`,
+                    boxShadow: "0 2px 5px rgba(0,0,0,0.03)",
+                  }}
+                >
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Punteggio Finale</div>
+                    <div style={{ fontSize: 11, color: robustnessAssessment.grade.color, fontWeight: 600 }}>
+                      {robustnessAssessment.totalScore >= 70 ? "Validazione Superata ✓" : "Rischio Overfit ⚠️"}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: FONT_MONO,
+                      fontSize: 32,
+                      fontWeight: 900,
+                      color: robustnessAssessment.grade.color,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {robustnessAssessment.totalScore}
+                    <span style={{ fontSize: 16, fontWeight: 600, color: C.muted }}>/100</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Textual Narrative & Operational Advice */}
+              <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}` }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 16 }}>
+                  <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: C.primaryDark, textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Activity size={14} /> Giudizio Diagnostico Out-Of-Sample
+                    </div>
+                    <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.45, margin: 0 }}>
+                      {robustnessAssessment.grade.description}
+                    </p>
+                  </div>
+                  <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11.5, fontWeight: 700, color: C.primaryDark, textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Compass size={14} /> Raccomandazione Operativa
+                    </div>
+                    <p style={{ fontSize: 12.5, color: C.text, lineHeight: 1.45, margin: 0 }}>
+                      {robustnessAssessment.grade.recommendation}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Detailed Breakdown of Component Sub-Scores */}
+              <div style={{ padding: "16px 20px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 6 }}>
+                  <h4 style={{ fontFamily: FONT_SERIF, fontSize: 15, color: C.primaryDark, margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+                    <Target size={16} color={C.primaryDark} /> Dettaglio dei Punteggi per Categoria Analitica
+                  </h4>
+                  <span style={{ fontSize: 11, color: C.muted }}>
+                    Somma ponderata su 5 dimensioni critiche di validazione statistica
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+                  {robustnessAssessment.subScores.map((item) => {
+                    const pct = (item.score / item.maxScore) * 100;
+                    const statusColor = item.status === "optimal" ? C.primary : item.status === "acceptable" ? C.amber : C.red;
+                    const statusBg = item.status === "optimal" ? C.primaryLight : item.status === "acceptable" ? C.amberLight : C.redLight;
+
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          background: "#FAF9F5",
+                          border: `1px solid ${C.border}`,
+                          borderRadius: 8,
+                          padding: "12px 14px",
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6, marginBottom: 4 }}>
+                            <span style={{ fontFamily: FONT_SANS, fontSize: 12, fontWeight: 700, color: C.text }}>
+                              {item.title}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: FONT_MONO,
+                                fontSize: 12,
+                                fontWeight: 800,
+                                color: statusColor,
+                                background: statusBg,
+                                padding: "1px 6px",
+                                borderRadius: 4,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {item.score} / {item.maxScore} pt
+                            </span>
+                          </div>
+
+                          {/* Progress Bar */}
+                          <div style={{ width: "100%", height: 6, background: "#EAE8E0", borderRadius: 3, overflow: "hidden", margin: "6px 0" }}>
+                            <div
+                              style={{
+                                width: `${Math.min(100, Math.max(0, pct))}%`,
+                                height: "100%",
+                                background: statusColor,
+                                borderRadius: 3,
+                              }}
+                            />
+                          </div>
+
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: C.muted, marginTop: 2 }}>
+                            <span style={{ fontFamily: FONT_MONO, fontWeight: 700, color: C.primaryDark }}>{item.valueFormatted}</span>
+                            <span style={{ fontSize: 10, color: C.muted }}>{item.targetText}</span>
+                          </div>
+                        </div>
+
+                        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 8, borderTop: `1px solid ${C.border}88`, paddingTop: 6, lineHeight: 1.3 }}>
+                          {item.hint}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </Card>
+          )}
+
           {/* Executive KPI Summary */}
           <Card style={{ marginBottom: 20 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 8 }}>
@@ -826,24 +1244,436 @@ export function Step7WalkForward({
             </Card>
           )}
 
-          {/* Chained OOS Equity Curve */}
-          <Card style={{ marginBottom: 20 }}>
-            <h3 style={{ fontFamily: FONT_SERIF, fontSize: 16, color: C.primaryDark, marginTop: 0 }}>
-              Curva di Equity Concatenata Out-Of-Sample (Chained OOS)
-            </h3>
-            <p style={{ fontSize: 12, color: C.muted, marginTop: -4 }}>
-              Questa curva rappresenta l'esperienza reale di trading: ogni segmento è stato generato esclusivamente su dati futuri mai visti dall'ottimizzazione o dalla strategia.
-            </p>
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={chainChartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
-                <XAxis dataKey="dt" tickFormatter={fmtDT} tick={{ fontSize: 9.5 }} minTickGap={60} />
-                <YAxis tickFormatter={(v) => (v / 1000).toFixed(0) + "k"} tick={{ fontSize: 10 }} width={44} />
-                <Tooltip labelFormatter={fmtDT} formatter={(v: any) => [fmtMoney(v), "Equity OOS"]} />
-                <ReferenceLine y={mm.initialCapital} stroke="#999" strokeDasharray="4 4" />
-                <Line type="monotone" dataKey="equity" stroke={C.primary} dot={false} strokeWidth={2} isAnimationActive={false} />
-              </LineChart>
-            </ResponsiveContainer>
+          {/* Comprehensive Chained OOS Metrics & Performance Suite */}
+          <Card style={{ marginBottom: 20, border: `1.5px solid ${C.primaryDark}33`, background: "#FFFFFF", boxShadow: "0 4px 14px rgba(0,0,0,0.03)" }}>
+            {/* Section Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <h3 style={{ fontFamily: FONT_SERIF, fontSize: 17, color: C.primaryDark, margin: 0, display: "flex", alignItems: "center", gap: 7 }}>
+                    <Layers size={18} color={C.primaryDark} /> Metriche &amp; Performance Chained Out-Of-Sample (OOS)
+                  </h3>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 4, background: C.primaryLight, color: C.primaryDark }}>
+                    Dati Fuori Campione
+                  </span>
+                </div>
+                <p style={{ fontSize: 12.5, color: C.muted, marginTop: 4, marginBottom: 0 }}>
+                  Valutazione complessiva delle prestazioni e del profilo di rischio concatenando esclusivamente tutti i periodi Out-Of-Sample (dati mai visti dalla strategia né in training né durante l'ottimizzazione).
+                </p>
+              </div>
+
+              {/* Chart Switcher Buttons */}
+              <div style={{ display: "flex", background: "#F4F3EE", padding: 3, borderRadius: 6, gap: 2, flexWrap: "wrap" }}>
+                <button
+                  id="btn-view-chained-equity"
+                  type="button"
+                  onClick={() => setChainedChartView("equity")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 11.5,
+                    fontWeight: chainedChartView === "equity" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: chainedChartView === "equity" ? "#FFFFFF" : "transparent",
+                    color: chainedChartView === "equity" ? C.primaryDark : C.muted,
+                    boxShadow: chainedChartView === "equity" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <TrendingUp size={13} /> Curva Equity OOS
+                </button>
+                <button
+                  id="btn-view-chained-underwater"
+                  type="button"
+                  onClick={() => setChainedChartView("underwater")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 11.5,
+                    fontWeight: chainedChartView === "underwater" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: chainedChartView === "underwater" ? "#FFFFFF" : "transparent",
+                    color: chainedChartView === "underwater" ? C.primaryDark : C.muted,
+                    boxShadow: chainedChartView === "underwater" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <TrendingDown size={13} /> Curva Underwater (DD %)
+                </button>
+                <button
+                  id="btn-view-chained-distribution"
+                  type="button"
+                  onClick={() => setChainedChartView("distribution")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 11.5,
+                    fontWeight: chainedChartView === "distribution" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: chainedChartView === "distribution" ? "#FFFFFF" : "transparent",
+                    color: chainedChartView === "distribution" ? C.primaryDark : C.muted,
+                    boxShadow: chainedChartView === "distribution" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <BarChart2 size={13} /> Distribuzione Drawdown
+                </button>
+                <button
+                  id="btn-view-chained-windows"
+                  type="button"
+                  onClick={() => setChainedChartView("windows")}
+                  style={{
+                    fontFamily: FONT_SANS,
+                    fontSize: 11.5,
+                    fontWeight: chainedChartView === "windows" ? 700 : 500,
+                    padding: "4px 10px",
+                    borderRadius: 5,
+                    border: "none",
+                    background: chainedChartView === "windows" ? "#FFFFFF" : "transparent",
+                    color: chainedChartView === "windows" ? C.primaryDark : C.muted,
+                    boxShadow: chainedChartView === "windows" ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <Layers size={13} /> Rendimento Finestre OOS
+                </button>
+              </div>
+            </div>
+
+            {/* 12 Key Chained OOS Metrics Grid */}
+            {chainedMetrics && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10, marginBottom: 18 }}>
+                {/* 1. OOS CAGR */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS CAGR</span>
+                    <span style={{ fontSize: 10, color: C.primaryDark, background: C.primaryLight, padding: "1px 5px", borderRadius: 3 }}>Annuo</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: (chainedMetrics.cagr ?? 0) >= 0 ? C.primaryDark : C.red, marginTop: 4 }}>
+                    {chainedMetrics.cagr != null ? fmtPct(chainedMetrics.cagr) : "—"}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Tasso di crescita composto OOS</div>
+                </div>
+
+                {/* 2. OOS Net Profit */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS Net Profit</span>
+                    <span style={{ fontSize: 10, color: chainedMetrics.netProfit >= 0 ? C.primaryDark : C.red }}>{fmtPct(chainedMetrics.netProfitPct)}</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.netProfit >= 0 ? C.primaryDark : C.red, marginTop: 4 }}>
+                    {fmtMoney(chainedMetrics.netProfit)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Profitto netto cumulato OOS</div>
+                </div>
+
+                {/* 3. OOS Profit Factor */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS Profit Factor</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Target &gt; 1.3</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.profitFactor >= 1.3 ? C.primaryDark : chainedMetrics.profitFactor >= 1.0 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtNum(chainedMetrics.profitFactor, 2)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Profitti lordi / Perdite lorde</div>
+                </div>
+
+                {/* 4. OOS Sharpe */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS Sharpe</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Annualizzato</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.sharpeAnnual >= 1.0 ? C.primaryDark : chainedMetrics.sharpeAnnual >= 0.5 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtNum(chainedMetrics.sharpeAnnual, 2)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Rendimento / Volatilità OOS</div>
+                </div>
+
+                {/* 5. OOS Sortino */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>OOS Sortino</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Downside Risk</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.sortinoAnnual >= 1.5 ? C.primaryDark : chainedMetrics.sortinoAnnual >= 0.8 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtNum(chainedMetrics.sortinoAnnual, 2)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Rapporto rischio asimmetrico</div>
+                </div>
+
+                {/* 6. Maximum Drawdown */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Maximum Drawdown</span>
+                    <span style={{ fontSize: 10, color: C.red }}>{fmtMoney(chainedMetrics.maxDD)}</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: C.red, marginTop: 4 }}>
+                    {fmtPct(chainedMetrics.maxDDPct)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Picco-valle massimo Chained OOS</div>
+                </div>
+
+                {/* 7. Recovery Factor */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Recovery Factor</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Net Profit / MaxDD</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.recoveryFactor >= 2.0 ? C.primaryDark : chainedMetrics.recoveryFactor >= 1.0 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtNum(chainedMetrics.recoveryFactor, 2)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Capacità di recupero dai drawdown</div>
+                </div>
+
+                {/* 8. % Finestre OOS Profittevoli */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>% Finestre Profittevoli</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>{chainedMetrics.profitableWindowsCount}/{chainedMetrics.totalWindowsCount} fold</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: chainedMetrics.pctProfitableWindows >= 70 ? C.primaryDark : chainedMetrics.pctProfitableWindows >= 50 ? C.amber : C.red, marginTop: 4 }}>
+                    {fmtPct(chainedMetrics.pctProfitableWindows / 100)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Frazione finestre OOS in utile</div>
+                </div>
+
+                {/* 9. Median OOS Return */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Median OOS Return</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Per Finestra</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: (chainedMetrics.medianOosReturnPct ?? 0) >= 0 ? C.primaryDark : C.red, marginTop: 4 }}>
+                    {chainedMetrics.medianOosReturnPct != null ? fmtPct(chainedMetrics.medianOosReturnPct) : "—"}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>Rendimento OOS tipico per fold</div>
+                </div>
+
+                {/* 10. Worst OOS Window */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Worst OOS Window</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>{chainedMetrics.worstWindow?.label || "—"}</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: (chainedMetrics.worstWindow?.returnPct ?? 0) >= 0 ? C.primaryDark : C.red, marginTop: 4 }}>
+                    {chainedMetrics.worstWindow ? fmtPct(chainedMetrics.worstWindow.returnPct) : "—"}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    {chainedMetrics.worstWindow ? fmtMoney(chainedMetrics.worstWindow.pnl) : "Nessun dato"}
+                  </div>
+                </div>
+
+                {/* 11. Numero di Trade OOS */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Numero di Trade OOS</span>
+                    <span style={{ fontSize: 10, color: C.primaryDark, fontWeight: 700 }}>WR: {fmtPct(chainedMetrics.winRate)}</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: C.text, marginTop: 4 }}>
+                    {chainedMetrics.totalTrades}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    {chainedMetrics.winCount}V · {chainedMetrics.lossCount}P (Attesa: {fmtMoney(chainedMetrics.expectancy)})
+                  </div>
+                </div>
+
+                {/* 12. Drawdown Medio & Max Durata */}
+                <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 7, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, display: "flex", justifyContent: "space-between" }}>
+                    <span>Drawdown Medio &amp; Durata</span>
+                    <span style={{ fontSize: 10, color: C.muted }}>Recupero</span>
+                  </div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 800, color: C.text, marginTop: 4 }}>
+                    {fmtPct(chainedMetrics.avgDrawdownPct)}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2 }}>
+                    Max durata DD: {Math.round(chainedMetrics.maxDrawdownDurationDays)} giorni
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Dynamic Active Chart Area */}
+            <div style={{ background: "#FAF9F5", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+              {/* View 1: Chained OOS Equity Curve */}
+              {chainedChartView === "equity" && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark }}>
+                      Evoluzione del Capitale Concatenato Out-Of-Sample (Chained Equity Curve)
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      Capitale Iniziale: {fmtMoney(mm.initialCapital)} · Finale: <b>{fmtMoney(mm.initialCapital + (chainedMetrics?.netProfit ?? 0))}</b>
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={chainChartData} margin={{ top: 10, right: 15, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="dt" tickFormatter={fmtDT} tick={{ fontSize: 9.5 }} minTickGap={60} />
+                      <YAxis tickFormatter={(v) => (v / 1000).toFixed(0) + "k €"} tick={{ fontSize: 10 }} width={48} domain={['auto', 'auto']} />
+                      <Tooltip labelFormatter={fmtDT} formatter={(v: any) => [fmtMoney(v), "Equity OOS"]} />
+                      <ReferenceLine y={mm.initialCapital} stroke="#999" strokeDasharray="4 4" label={{ value: "Iniziale", fontSize: 9.5, fill: "#888", position: "right" }} />
+                      <Line type="monotone" dataKey="equity" stroke={C.primary} dot={false} strokeWidth={2.2} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* View 2: Underwater Drawdown Curve */}
+              {chainedChartView === "underwater" && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.red }}>
+                      Curva Underwater (% Drawdown dal Massimo nel Tempo su Dati OOS)
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      Max Drawdown OOS: <b>{fmtPct(chainedMetrics?.maxDDPct ?? 0)}</b> ({fmtMoney(chainedMetrics?.maxDD ?? 0)})
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <AreaChart data={underwaterChartData} margin={{ top: 10, right: 15, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="dt" tickFormatter={fmtDT} tick={{ fontSize: 9.5 }} minTickGap={60} />
+                      <YAxis tickFormatter={(v) => (-v * 100).toFixed(0) + "%"} tick={{ fontSize: 10 }} width={45} domain={[0, 'auto']} />
+                      <Tooltip labelFormatter={fmtDT} formatter={(v: any) => [`-${(Number(v) * 100).toFixed(2)}%`, "Drawdown OOS"]} />
+                      <ReferenceLine y={0} stroke="#999" />
+                      <ReferenceLine y={chainedMetrics?.maxDDPct ?? 0} stroke={C.red} strokeDasharray="3 3" label={{ value: `Max: -${((chainedMetrics?.maxDDPct ?? 0) * 100).toFixed(1)}%`, fontSize: 9.5, fill: C.red, position: "right" }} />
+                      <Area type="monotone" dataKey="drawdownPct" stroke={C.red} fill="rgba(198, 40, 40, 0.22)" strokeWidth={1.8} isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* View 3: Drawdown Distribution Histogram */}
+              {chainedChartView === "distribution" && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark }}>
+                      Distribuzione dei Drawdown per Fascia di Profondità (% di Tempo in DD)
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      Indica per quanto tempo il conto è rimasto in ciascun intervallo di drawdown
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={chainedMetrics?.drawdownBuckets || []} margin={{ top: 15, right: 15, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="rangeLabel" tick={{ fontSize: 11 }} />
+                      <YAxis tickFormatter={(v) => v.toFixed(0) + "%"} tick={{ fontSize: 10 }} width={42} />
+                      <Tooltip formatter={(v: any, name: any, item: any) => [`${Number(v).toFixed(1)}% del tempo (${item.payload.count} campioni)`, "Tempo trascorso"]} />
+                      <Bar dataKey="pctOfTime" name="% Tempo Trascorso" radius={[4, 4, 0, 0]}>
+                        {(chainedMetrics?.drawdownBuckets || []).map((entry, index) => {
+                          const color = index === 0 ? C.primary : index === 1 ? "#558B2F" : index === 2 ? C.amber : index === 3 ? "#E65100" : C.red;
+                          return <Cell key={`cell-${index}`} fill={color} />;
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {/* View 4: Fold-by-Fold OOS Returns */}
+              {chainedChartView === "windows" && (
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, fontFamily: FONT_SANS, color: C.primaryDark }}>
+                      Rendimento OOS per Singola Finestra Temporale (Fold)
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted }}>
+                      Finestre OOS in Profitto: <b>{chainedMetrics?.profitableWindowsCount} su {chainedMetrics?.totalWindowsCount}</b> ({fmtPct((chainedMetrics?.pctProfitableWindows ?? 0) / 100)})
+                    </div>
+                  </div>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={oosWindowReturnsChartData} margin={{ top: 15, right: 15, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                      <YAxis tickFormatter={(v) => v.toFixed(1) + "%"} tick={{ fontSize: 10 }} width={45} />
+                      <Tooltip formatter={(v: any, name: any, item: any) => [`${Number(v) > 0 ? "+" : ""}${Number(v).toFixed(2)}% (${fmtMoney(item.payload.pnl)}) · ${item.payload.n} trade · PF: ${item.payload.pf ? item.payload.pf.toFixed(2) : "—"}`, "Rendimento OOS"]} labelFormatter={(l: any, p: any) => `${l}: ${p?.[0]?.payload?.period || ""}`} />
+                      <ReferenceLine y={0} stroke="#666" />
+                      <Bar dataKey="returnPct" name="Rendimento OOS %" radius={[3, 3, 0, 0]}>
+                        {oosWindowReturnsChartData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={entry.isProfitable ? C.primary : C.red} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            {/* Detailed Drawdown Distribution Table */}
+            {chainedMetrics && chainedMetrics.drawdownBuckets.length > 0 && (
+              <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 6 }}>
+                <h4 style={{ fontFamily: FONT_SERIF, fontSize: 14, color: C.primaryDark, margin: "0 0 10px 0", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ShieldAlert size={15} /> Tabella di Distribuzione &amp; Persistenza dei Drawdown OOS
+                </h4>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: `1.5px solid ${C.border}` }}>
+                        <th style={{ textAlign: "left", padding: "6px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Fascia di Profondità Drawdown</th>
+                        <th style={{ textAlign: "right", padding: "6px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Campioni</th>
+                        <th style={{ textAlign: "right", padding: "6px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>% di Tempo Trascorso</th>
+                        <th style={{ textAlign: "left", padding: "6px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11, width: "35%" }}>Distribuzione Visiva</th>
+                        <th style={{ textAlign: "left", padding: "6px 10px", fontFamily: FONT_SANS, color: C.muted, fontSize: 11 }}>Diagnosi Rischio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {chainedMetrics.drawdownBuckets.map((bucket, idx) => {
+                        const barColor = idx === 0 ? C.primary : idx === 1 ? "#558B2F" : idx === 2 ? C.amber : idx === 3 ? "#E65100" : C.red;
+                        const diagText =
+                          idx === 0 ? "Ottimale: il conto è vicino ai massimi storici o in nuovo picco." :
+                          idx === 1 ? "Correzione lieve fisiologica e di normale gestione." :
+                          idx === 2 ? "Drawdown moderato: trade in sequenza negativa controllata." :
+                          idx === 3 ? "Drawdown significativo: richiede monitoraggio del risk management." :
+                          idx === 4 ? "Fase severa: stress test sul capitale operativo." :
+                          "Critico: drawdown profondo oltre la soglia prudenziale.";
+
+                        return (
+                          <tr key={idx} style={{ borderBottom: `1px solid ${C.border}66`, background: idx % 2 ? "#FAF9F5" : "transparent" }}>
+                            <td style={{ padding: "6px 10px", fontWeight: 700, fontFamily: FONT_SANS, color: C.text }}>
+                              <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: barColor, marginRight: 6 }} />
+                              {bucket.rangeLabel}
+                            </td>
+                            <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: FONT_MONO, color: C.muted }}>
+                              {bucket.count}
+                            </td>
+                            <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700, color: bucket.pctOfTime > 50 && idx > 1 ? C.red : C.text }}>
+                              {bucket.pctOfTime.toFixed(1)}%
+                            </td>
+                            <td style={{ padding: "6px 10px" }}>
+                              <div style={{ width: "100%", height: 7, background: "#EAE8E0", borderRadius: 4, overflow: "hidden" }}>
+                                <div style={{ width: `${Math.min(100, Math.max(0, bucket.pctOfTime))}%`, height: "100%", background: barColor, borderRadius: 4 }} />
+                              </div>
+                            </td>
+                            <td style={{ padding: "6px 10px", fontSize: 11, color: C.muted }}>
+                              {diagText}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </Card>
 
           {/* Degradation Table */}

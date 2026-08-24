@@ -374,6 +374,53 @@ export interface WfoParamSummary {
   valuesPerFold: { foldLabel: string; value: number }[];
 }
 
+export interface DrawdownBucket {
+  rangeLabel: string;
+  minPct: number;
+  maxPct: number;
+  count: number;
+  pctOfTime: number;
+}
+
+export interface ChainedOosMetrics {
+  cagr: number | null;
+  netProfit: number;
+  netProfitPct: number;
+  profitFactor: number;
+  sharpeAnnual: number;
+  sortinoAnnual: number;
+  maxDD: number;
+  maxDDPct: number;
+  recoveryFactor: number;
+  pctProfitableWindows: number;
+  profitableWindowsCount: number;
+  totalWindowsCount: number;
+  medianOosReturnPct: number | null;
+  worstWindow: {
+    label: string;
+    returnPct: number;
+    pnl: number;
+    period: string;
+  } | null;
+  bestWindow: {
+    label: string;
+    returnPct: number;
+    pnl: number;
+    period: string;
+  } | null;
+  totalTrades: number;
+  winRate: number;
+  winCount: number;
+  lossCount: number;
+  avgWin: number;
+  avgLoss: number;
+  expectancy: number;
+  underwaterCurve: { dt: number; drawdownPct: number; drawdownAmount: number; equity: number }[];
+  drawdownBuckets: DrawdownBucket[];
+  avgDrawdownPct: number;
+  maxDrawdownDurationDays: number;
+}
+
 export interface WalkForwardResult {
   results: WalkForwardWindowResult[];
   chainPoints: { dt: number; equity: number; type?: string }[];
@@ -383,4 +430,5 @@ export interface WalkForwardResult {
   mode?: "base" | "optimized" | "wfo";
   objKey?: string;
   wfoParamSummaries?: WfoParamSummary[];
+  chainedMetrics?: ChainedOosMetrics;
 }

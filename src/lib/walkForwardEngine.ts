@@ -1,7 +1,209 @@
-import { Bar, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, WalkForwardWindowResult, TweakableParam, SweepConfigItem } from "../types";
+import { Bar, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, WalkForwardWindowResult, TweakableParam, SweepConfigItem, Trade, ChainedOosMetrics, DrawdownBucket } from "../types";
 import { runBacktest, computeMetrics } from "./backtestEngine";
 import { runParameterSweep, setByPath } from "./scenarioEngine";
 import { fmtDT } from "./csvHelper";
+
+export function computeChainedOosMetrics(
+  results: WalkForwardWindowResult[],
+  initialCapital: number,
+  bars?: Bar[]
+): ChainedOosMetrics {
+  const allOosTrades: Trade[] = [];
+  results.forEach((r) => {
+    if (r.oosTrades && r.oosTrades.length > 0) {
+      allOosTrades.push(...r.oosTrades);
+    }
+  });
+
+  allOosTrades.sort((a, b) => a.entryDt - b.entryDt);
+
+  const totalTrades = allOosTrades.length;
+  const wins = allOosTrades.filter((t) => t.pnl > 0);
+  const losses = allOosTrades.filter((t) => t.pnl <= 0);
+  const winCount = wins.length;
+  const lossCount = losses.length;
+  const winRate = totalTrades > 0 ? winCount / totalTrades : 0;
+  const grossProfit = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 999 : 0;
+  const avgWin = winCount > 0 ? grossProfit / winCount : 0;
+  const avgLoss = lossCount > 0 ? grossLoss / lossCount : 0;
+  const netProfit = allOosTrades.reduce((s, t) => s + t.pnl, 0);
+  const netProfitPct = initialCapital > 0 ? netProfit / initialCapital : 0;
+  const expectancy = totalTrades > 0 ? netProfit / totalTrades : 0;
+  const finalEquity = initialCapital + netProfit;
+
+  let startDt = bars && bars.length > 0 && results.length > 0 ? bars[results[0].oosStart]?.dt || bars[0].dt : (allOosTrades[0]?.entryDt || Date.now());
+  let endDt = bars && bars.length > 0 && results.length > 0 ? bars[Math.min(bars.length - 1, results[results.length - 1].oosEnd - 1)]?.dt || bars[bars.length - 1].dt : (allOosTrades[totalTrades - 1]?.exitDt || Date.now());
+  if (totalTrades > 0) {
+    if (allOosTrades[0].entryDt < startDt) startDt = allOosTrades[0].entryDt;
+    if (allOosTrades[totalTrades - 1].exitDt > endDt) endDt = allOosTrades[totalTrades - 1].exitDt;
+  }
+  const totalDays = Math.max(1, (endDt - startDt) / 86400000);
+  const totalYears = totalDays / 365.25;
+
+  let cagr: number | null = null;
+  if (totalYears >= 0.02 && initialCapital > 0) {
+    if (finalEquity > 0) {
+      cagr = Math.pow(finalEquity / initialCapital, 1 / totalYears) - 1;
+    } else {
+      cagr = -1.0;
+    }
+  } else {
+    cagr = netProfitPct;
+  }
+
+  const tradeRetPcts = allOosTrades.map((t) => {
+    const eqBefore = t.equityAfter - t.pnl;
+    return eqBefore > 0 ? t.pnl / eqBefore : 0;
+  });
+  const meanR = tradeRetPcts.length ? tradeRetPcts.reduce((s, v) => s + v, 0) / tradeRetPcts.length : 0;
+  const variance = tradeRetPcts.length > 1
+    ? tradeRetPcts.reduce((s, v) => s + Math.pow(v - meanR, 2), 0) / (tradeRetPcts.length - 1)
+    : 0;
+  const stdR = Math.sqrt(variance);
+  const tradesPerYear = totalDays > 0 ? (totalTrades / totalDays) * 365.25 : 0;
+  const sharpeAnnual = stdR > 0 ? (meanR / stdR) * Math.sqrt(tradesPerYear) : 0;
+
+  const downsideSqSum = tradeRetPcts.reduce((s, r) => s + (r < 0 ? r * r : 0), 0);
+  const downsideDev = Math.sqrt(downsideSqSum / (tradeRetPcts.length || 1));
+  const sortinoAnnual = downsideDev > 0 ? (meanR / downsideDev) * Math.sqrt(tradesPerYear) : (meanR > 0 ? 999 : 0);
+
+  let currentEq = initialCapital;
+  let peak = initialCapital;
+  let maxDD = 0;
+  let maxDDPct = 0;
+  const underwaterCurve: { dt: number; drawdownPct: number; drawdownAmount: number; equity: number }[] = [
+    { dt: startDt, drawdownPct: 0, drawdownAmount: 0, equity: initialCapital }
+  ];
+
+  let currentDdStartDt: number | null = null;
+  let maxDrawdownDurationDays = 0;
+
+  allOosTrades.forEach((t) => {
+    currentEq += t.pnl;
+    if (currentEq > peak) {
+      peak = currentEq;
+      if (currentDdStartDt != null) {
+        const ddDurationDays = (t.exitDt - currentDdStartDt) / 86400000;
+        if (ddDurationDays > maxDrawdownDurationDays) {
+          maxDrawdownDurationDays = ddDurationDays;
+        }
+        currentDdStartDt = null;
+      }
+    } else {
+      if (currentDdStartDt == null) {
+        currentDdStartDt = t.entryDt;
+      }
+    }
+
+    const ddAmt = Math.max(0, peak - currentEq);
+    const ddPct = peak > 0 ? ddAmt / peak : 0;
+    if (ddAmt > maxDD) maxDD = ddAmt;
+    if (ddPct > maxDDPct) maxDDPct = ddPct;
+
+    underwaterCurve.push({
+      dt: t.exitDt,
+      drawdownPct: ddPct,
+      drawdownAmount: ddAmt,
+      equity: currentEq,
+    });
+  });
+
+  if (currentDdStartDt != null) {
+    const ddDurationDays = (endDt - currentDdStartDt) / 86400000;
+    if (ddDurationDays > maxDrawdownDurationDays) {
+      maxDrawdownDurationDays = ddDurationDays;
+    }
+  }
+
+  const recoveryFactor = maxDD > 0 ? netProfit / maxDD : netProfit > 0 ? 999 : 0;
+
+  const validWindows = results.filter((r) => r.oos != null);
+  const totalWindowsCount = validWindows.length;
+  const profitableWindows = validWindows.filter((r) => (r.oos?.totalReturnPct ?? 0) > 0);
+  const profitableWindowsCount = profitableWindows.length;
+  const pctProfitableWindows = totalWindowsCount > 0 ? (profitableWindowsCount / totalWindowsCount) * 100 : 0;
+
+  const oosReturns = validWindows.map((r) => r.oos!.totalReturnPct).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  const medianOosReturnPct = oosReturns.length > 0 ? oosReturns[Math.floor(oosReturns.length / 2)] : null;
+
+  let worstWindow: ChainedOosMetrics["worstWindow"] = null;
+  let bestWindow: ChainedOosMetrics["bestWindow"] = null;
+  if (validWindows.length > 0) {
+    const sortedByRet = [...validWindows].sort((a, b) => (a.oos?.totalReturnPct ?? 0) - (b.oos?.totalReturnPct ?? 0));
+    const worst = sortedByRet[0];
+    const best = sortedByRet[sortedByRet.length - 1];
+    worstWindow = {
+      label: worst.label,
+      returnPct: worst.oos?.totalReturnPct ?? 0,
+      pnl: worst.oosTrades.reduce((s, t) => s + t.pnl, 0),
+      period: worst.period,
+    };
+    bestWindow = {
+      label: best.label,
+      returnPct: best.oos?.totalReturnPct ?? 0,
+      pnl: best.oosTrades.reduce((s, t) => s + t.pnl, 0),
+      period: best.period,
+    };
+  }
+
+  const bucketRanges = [
+    { rangeLabel: "0% – 1%", minPct: 0, maxPct: 0.01 },
+    { rangeLabel: "1% – 3%", minPct: 0.01, maxPct: 0.03 },
+    { rangeLabel: "3% – 6%", minPct: 0.03, maxPct: 0.06 },
+    { rangeLabel: "6% – 10%", minPct: 0.06, maxPct: 0.10 },
+    { rangeLabel: "10% – 15%", minPct: 0.10, maxPct: 0.15 },
+    { rangeLabel: "> 15%", minPct: 0.15, maxPct: Infinity },
+  ];
+
+  const totalPoints = underwaterCurve.length;
+  const drawdownBuckets: DrawdownBucket[] = bucketRanges.map((b) => {
+    const inBucket = underwaterCurve.filter((p) => {
+      if (b.maxPct === Infinity) return p.drawdownPct >= b.minPct;
+      return p.drawdownPct >= b.minPct && p.drawdownPct < b.maxPct;
+    });
+    return {
+      rangeLabel: b.rangeLabel,
+      minPct: b.minPct,
+      maxPct: b.maxPct,
+      count: inBucket.length,
+      pctOfTime: totalPoints > 0 ? (inBucket.length / totalPoints) * 100 : 0,
+    };
+  });
+
+  const nonZeroDDs = underwaterCurve.map((p) => p.drawdownPct).filter((d) => d > 0.0001);
+  const avgDrawdownPct = nonZeroDDs.length > 0 ? nonZeroDDs.reduce((a, b) => a + b, 0) / nonZeroDDs.length : 0;
+
+  return {
+    cagr,
+    netProfit,
+    netProfitPct,
+    profitFactor,
+    sharpeAnnual,
+    sortinoAnnual,
+    maxDD,
+    maxDDPct,
+    recoveryFactor,
+    pctProfitableWindows,
+    profitableWindowsCount,
+    totalWindowsCount,
+    medianOosReturnPct,
+    worstWindow,
+    bestWindow,
+    totalTrades,
+    winRate,
+    winCount,
+    lossCount,
+    avgWin,
+    avgLoss,
+    expectancy,
+    underwaterCurve,
+    drawdownBuckets,
+    avgDrawdownPct,
+    maxDrawdownDurationDays,
+  };
+}
 
 export function runWalkForward(
   bars: Bar[],
@@ -91,7 +293,9 @@ export function runWalkForward(
     degradation[k] = { is: mI, oos: mO, ratio: mI != null && Math.abs(mI) > 1e-9 && mO != null ? mO / mI : null };
   });
 
-  return { results, chainPoints, efficiencyRatio, degradation, nFolds: results.length };
+  const chainedMetrics = computeChainedOosMetrics(results, mm.initialCapital, bars);
+
+  return { results, chainPoints, efficiencyRatio, degradation, nFolds: results.length, chainedMetrics };
 }
 
 export function runWalkForwardOptimized(
@@ -250,6 +454,8 @@ export function runWalkForwardOptimized(
     };
   });
 
+  const chainedMetrics = computeChainedOosMetrics(results, initialCapital, bars);
+
   return {
     results,
     chainPoints,
@@ -259,5 +465,6 @@ export function runWalkForwardOptimized(
     mode: "wfo",
     objKey: "wfo",
     wfoParamSummaries,
+    chainedMetrics,
   };
 }
