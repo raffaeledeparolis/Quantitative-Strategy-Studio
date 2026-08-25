@@ -1,7 +1,7 @@
 import { Bar, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, WalkForwardWindowResult, TweakableParam, SweepConfigItem, Trade, ChainedOosMetrics, DrawdownBucket } from "../types";
 import { runBacktest, computeMetrics } from "./backtestEngine";
 import { runParameterSweep, setByPath } from "./scenarioEngine";
-import { fmtDT } from "./csvHelper";
+import { fmtDT, fmtNum, fmtMoney, fmtPct } from "./csvHelper";
 
 export function computeChainedOosMetrics(
   results: WalkForwardWindowResult[],
@@ -466,5 +466,201 @@ export function runWalkForwardOptimized(
     objKey: "wfo",
     wfoParamSummaries,
     chainedMetrics,
+  };
+}
+
+export interface RobustnessSubScore {
+  id: string;
+  title: string;
+  score: number;
+  maxScore: number;
+  valueFormatted: string;
+  targetText: string;
+  status: "optimal" | "acceptable" | "warning";
+  hint: string;
+}
+
+export interface RobustnessAssessment {
+  totalScore: number;
+  grade: {
+    label: string;
+    verdict: string;
+    color: string;
+    bgColor: string;
+    borderColor: string;
+    description: string;
+    recommendation: string;
+  };
+  subScores: RobustnessSubScore[];
+}
+
+export function calculateWalkForwardRobustnessAssessment(
+  wfResult: WalkForwardResult,
+  chainedMetrics: ChainedOosMetrics | null
+): RobustnessAssessment | null {
+  if (!wfResult || !chainedMetrics) return null;
+
+  const effRatio = wfResult.efficiencyRatio ?? 0;
+  const oosPf = chainedMetrics.profitFactor;
+  const pctProfitable = chainedMetrics.pctProfitableWindows;
+  const maxDdPct = chainedMetrics.maxDDPct;
+  const recFactor = chainedMetrics.recoveryFactor;
+  const oosSharpe = chainedMetrics.sharpeAnnual;
+
+  // Component 1: Efficiency Ratio (Max 25 pts)
+  let scoreEff = 0;
+  if (effRatio >= 0.85) scoreEff = 25;
+  else if (effRatio >= 0.70) scoreEff = 21;
+  else if (effRatio >= 0.55) scoreEff = 17;
+  else if (effRatio >= 0.40) scoreEff = 12;
+  else if (effRatio >= 0.25) scoreEff = 6;
+  else scoreEff = Math.max(0, Math.round(effRatio * 20));
+
+  // Component 2: OOS Profit Factor & Expectancy (Max 20 pts)
+  let scorePf = 0;
+  if (oosPf >= 2.0) scorePf = 20;
+  else if (oosPf >= 1.6) scorePf = 17;
+  else if (oosPf >= 1.3) scorePf = 14;
+  else if (oosPf >= 1.1) scorePf = 10;
+  else if (oosPf >= 1.0) scorePf = 6;
+  else if (oosPf >= 0.8) scorePf = 2;
+  else scorePf = 0;
+
+  // Component 3: Consistency of Windows / Profitable Folds (Max 20 pts)
+  let scoreConsistency = 0;
+  if (pctProfitable >= 85) scoreConsistency = 20;
+  else if (pctProfitable >= 70) scoreConsistency = 16;
+  else if (pctProfitable >= 55) scoreConsistency = 12;
+  else if (pctProfitable >= 40) scoreConsistency = 7;
+  else scoreConsistency = 2;
+
+  // Component 4: Drawdown & Recovery (Max 20 pts)
+  let scoreRisk = 0;
+  let ddSubScore = 0;
+  if (maxDdPct <= 0.08) ddSubScore = 10;
+  else if (maxDdPct <= 0.15) ddSubScore = 8;
+  else if (maxDdPct <= 0.25) ddSubScore = 5;
+  else if (maxDdPct <= 0.35) ddSubScore = 2;
+  else ddSubScore = 0;
+
+  let recSubScore = 0;
+  if (recFactor >= 3.0) recSubScore = 10;
+  else if (recFactor >= 2.0) recSubScore = 8;
+  else if (recFactor >= 1.2) recSubScore = 5;
+  else if (recFactor >= 0.8) recSubScore = 3;
+  else recSubScore = 0;
+  scoreRisk = ddSubScore + recSubScore;
+
+  // Component 5: Risk-Adjusted Quality / Sharpe & Sortino (Max 15 pts)
+  let scoreQuality = 0;
+  if (oosSharpe >= 1.5) scoreQuality = 15;
+  else if (oosSharpe >= 1.1) scoreQuality = 12;
+  else if (oosSharpe >= 0.7) scoreQuality = 9;
+  else if (oosSharpe >= 0.4) scoreQuality = 5;
+  else if (oosSharpe > 0) scoreQuality = 2;
+  else scoreQuality = 0;
+
+  const totalScore = Math.min(100, Math.max(0, scoreEff + scorePf + scoreConsistency + scoreRisk + scoreQuality));
+
+  let grade: RobustnessAssessment["grade"];
+  if (totalScore >= 85) {
+    grade = {
+      label: "ROBUSTEZZA ECCELLENTE (GRADE A+)",
+      verdict: "Strategia Estremamente Solida e Resiliente",
+      color: "#1E4620",
+      bgColor: "#E8F5E9",
+      borderColor: "#81C784",
+      description: "La strategia dimostra un'elevata persistenza del vantaggio competitivo fuori campione (OOS), con un'eccellente tenuta dell'Efficiency Ratio, drawdown controllati e una distribuzione omogenea dei profitti tra i vari cicli temporali.",
+      recommendation: "Idonea all'impiego operativo a mercato con gestione del rischio standard. I parametri hanno mostrato stabilità e bassa sensibilità all'overfitting.",
+    };
+  } else if (totalScore >= 70) {
+    grade = {
+      label: "ROBUSTEZZA BUONA / CONFERMATA (GRADE B)",
+      verdict: "Strategia Solida con Vantaggio OOS Confermato",
+      color: "#2E7D32",
+      bgColor: "#F1F8E9",
+      borderColor: "#AED581",
+      description: "Buona conservazione delle performance sui dati Out-Of-Sample. La maggioranza delle finestre temporali si chiude in utile e il profilo di drawdown si mantiene entro livelli gestibili.",
+      recommendation: "Pronta per il live trading o per una fase di paper trading di validazione. Monitorare periodicamente l'Efficiency Ratio se il mercato entra in regimi di eccezionale volatilità.",
+    };
+  } else if (totalScore >= 50) {
+    grade = {
+      label: "ROBUSTEZZA MODERATA / CONDIZIONATA (GRADE C)",
+      verdict: "Vantaggio OOS Marginale con Segnali di Degrado",
+      color: "#E65100",
+      bgColor: "#FFF3E0",
+      borderColor: "#FFB74D",
+      description: "Si osserva un degrado non trascurabile delle metriche nel passaggio da In-Sample a Out-Of-Sample. Alcuni fold presentano oscillazioni ampie o rendimenti sotto le attese.",
+      recommendation: "Si raccomanda cautela prima del trading reale. Considerare una semplificazione delle regole di ingresso/uscita, l'allargamento della finestra IS di training o la riduzione del numero di parametri liberi.",
+    };
+  } else {
+    grade = {
+      label: "ROBUSTEZZA INSUFFICIENTE / OVERFITTING (GRADE D)",
+      verdict: "Rischio Elevato di Sovra-Ottimizzazione (Curve-Fitting)",
+      color: "#C62828",
+      bgColor: "#FFEBEE",
+      borderColor: "#EF9A9A",
+      description: "Il modello fallisce nel generalizzare sui dati mai visti: le performance OOS crollano drasticamente rispetto a quelle IS (Efficiency Ratio basso o negativo), con drawdown elevati e scarsa regolarità tra i fold.",
+      recommendation: "Non idonea al live trading nella configurazione attuale. La strategia soffre verosimilmente di data-mining bias o eccessiva complessità dei parametri.",
+    };
+  }
+
+  const subScores: RobustnessSubScore[] = [
+    {
+      id: "eff",
+      title: "Efficienza OOS / IS (WFE)",
+      score: scoreEff,
+      maxScore: 25,
+      valueFormatted: fmtNum(effRatio, 2),
+      targetText: "Target ≥ 0.65",
+      status: scoreEff >= 17 ? "optimal" : scoreEff >= 12 ? "acceptable" : "warning",
+      hint: "Rapporto tra rendimento OOS e rendimento IS: misura la resistenza all'overfitting.",
+    },
+    {
+      id: "pf",
+      title: "Redditività OOS (Profit Factor & PnL)",
+      score: scorePf,
+      maxScore: 20,
+      valueFormatted: `PF ${fmtNum(oosPf, 2)} (${fmtMoney(chainedMetrics.netProfit)})`,
+      targetText: "Target PF ≥ 1.30",
+      status: scorePf >= 14 ? "optimal" : scorePf >= 10 ? "acceptable" : "warning",
+      hint: "Capacità di generare guadagni netti sui dati futuri concatenati.",
+    },
+    {
+      id: "consistency",
+      title: "Consistenza Finestre (% Profittevoli)",
+      score: scoreConsistency,
+      maxScore: 20,
+      valueFormatted: `${chainedMetrics.profitableWindowsCount}/${chainedMetrics.totalWindowsCount} (${fmtPct(pctProfitable / 100)})`,
+      targetText: "Target ≥ 70%",
+      status: scoreConsistency >= 16 ? "optimal" : scoreConsistency >= 12 ? "acceptable" : "warning",
+      hint: "Frazione di cicli OOS indipendenti chiusi con rendimento positivo.",
+    },
+    {
+      id: "risk",
+      title: "Controllo Rischio (Max DD & Recovery)",
+      score: scoreRisk,
+      maxScore: 20,
+      valueFormatted: `DD ${fmtPct(maxDdPct)} · Rec. Factor ${fmtNum(recFactor, 2)}`,
+      targetText: "DD ≤ 15% · Rec ≥ 1.5",
+      status: scoreRisk >= 15 ? "optimal" : scoreRisk >= 10 ? "acceptable" : "warning",
+      hint: "Contenimento del drawdown massimo e rapidità di recupero del capitale.",
+    },
+    {
+      id: "quality",
+      title: "Qualità Risk-Adjusted (Sharpe & Sortino)",
+      score: scoreQuality,
+      maxScore: 15,
+      valueFormatted: `Sharpe ${fmtNum(oosSharpe, 2)} · Sortino ${fmtNum(chainedMetrics.sortinoAnnual, 2)}`,
+      targetText: "Sharpe ≥ 1.0",
+      status: scoreQuality >= 12 ? "optimal" : scoreQuality >= 7 ? "acceptable" : "warning",
+      hint: "Rendimento normalizzato per la volatilità e il downside risk dei trade.",
+    },
+  ];
+
+  return {
+    totalScore,
+    grade,
+    subScores,
   };
 }

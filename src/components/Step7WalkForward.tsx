@@ -7,18 +7,19 @@ import {
   AlertTriangle, Sparkles, Sliders, ShieldCheck, ChevronDown, ChevronUp, Layers, TrendingUp,
   TrendingDown, CheckSquare, Square, Activity, Target, Award, PieChart, BarChart2,
   ShieldAlert, ArrowUpRight, ArrowDownRight, Scale, Clock, Compass, Shuffle, Dice5,
-  FileSpreadsheet, BarChart3, RefreshCw
+  FileSpreadsheet, BarChart3, RefreshCw, FileText, Download
 } from "lucide-react";
 import { C, FONT_SERIF, FONT_SANS, FONT_MONO, Card, Button, Field, KPI, inputStyle } from "./CommonUI";
 import {
   Bar as BarData, StrategyRules, MoneyManagement, WalkForwardConfig, WalkForwardResult, TweakableParam, SweepConfigItem, WfoParamSummary,
-  Trade, MonteCarloResult, MonteCarloConfig, HistogramBin
+  Trade, MonteCarloResult, MonteCarloConfig, HistogramBin, BacktestResult
 } from "../types";
 import { fmtPct, fmtNum, fmtMoney, fmtDT } from "../lib/csvHelper";
 import { downsample } from "../lib/backtestEngine";
 import { OPTIM_OBJECTIVES, getParamGridValues } from "../lib/scenarioEngine";
-import { computeChainedOosMetrics } from "../lib/walkForwardEngine";
+import { computeChainedOosMetrics, calculateWalkForwardRobustnessAssessment } from "../lib/walkForwardEngine";
 import { runMonteCarlo, rankPercentile, percentile } from "../lib/monteCarloEngine";
+import { exportWalkForwardFullSummaryPdfReport } from "../lib/pdfReportGenerator";
 
 interface Step7WalkForwardProps {
   bars: BarData[];
@@ -36,6 +37,9 @@ interface Step7WalkForwardProps {
   onRunWalkForward: (mode: "base" | "opt" | "wfo", objFnKey?: string, selectedParamIds?: string[]) => void;
   onBack: () => void;
   onReset: () => void;
+  backtestResult?: BacktestResult | null;
+  baseMcResult?: MonteCarloResult | null;
+  strategyTitle?: string;
 }
 
 export function Step7WalkForward({
@@ -54,6 +58,9 @@ export function Step7WalkForward({
   onRunWalkForward,
   onBack,
   onReset,
+  backtestResult,
+  baseMcResult,
+  strategyTitle,
 }: Step7WalkForwardProps) {
   const [activeTab, setActiveTab] = useState<"base" | "opt" | "wfo">("wfo");
   const [selectedObjFn, setSelectedObjFn] = useState<string>("composite");
@@ -63,6 +70,7 @@ export function Step7WalkForward({
   const [expandedFoldIndex, setExpandedFoldIndex] = useState<number | null>(null);
   const [showFoldMatrix, setShowFoldMatrix] = useState<boolean>(true);
   const [chainedChartView, setChainedChartView] = useState<"equity" | "underwater" | "distribution" | "windows">("equity");
+  const [exportingPdf, setExportingPdf] = useState<boolean>(false);
 
   const totalBars = bars.length;
 
@@ -119,172 +127,7 @@ export function Step7WalkForward({
 
   // Robustness Score & Composite Grading Model
   const robustnessAssessment = useMemo(() => {
-    if (!wfResult || !chainedMetrics) return null;
-
-    const effRatio = wfResult.efficiencyRatio ?? 0;
-    const oosPf = chainedMetrics.profitFactor;
-    const pctProfitable = chainedMetrics.pctProfitableWindows;
-    const maxDdPct = chainedMetrics.maxDDPct;
-    const recFactor = chainedMetrics.recoveryFactor;
-    const oosSharpe = chainedMetrics.sharpeAnnual;
-
-    // Component 1: Efficiency Ratio (Max 25 pts)
-    // Measures preservation of IS performance in OOS
-    let scoreEff = 0;
-    if (effRatio >= 0.85) scoreEff = 25;
-    else if (effRatio >= 0.70) scoreEff = 21;
-    else if (effRatio >= 0.55) scoreEff = 17;
-    else if (effRatio >= 0.40) scoreEff = 12;
-    else if (effRatio >= 0.25) scoreEff = 6;
-    else scoreEff = Math.max(0, Math.round(effRatio * 20));
-
-    // Component 2: OOS Profit Factor & Expectancy (Max 20 pts)
-    let scorePf = 0;
-    if (oosPf >= 2.0) scorePf = 20;
-    else if (oosPf >= 1.6) scorePf = 17;
-    else if (oosPf >= 1.3) scorePf = 14;
-    else if (oosPf >= 1.1) scorePf = 10;
-    else if (oosPf >= 1.0) scorePf = 6;
-    else if (oosPf >= 0.8) scorePf = 2;
-    else scorePf = 0;
-
-    // Component 3: Consistency of Windows / Profitable Folds (Max 20 pts)
-    let scoreConsistency = 0;
-    if (pctProfitable >= 85) scoreConsistency = 20;
-    else if (pctProfitable >= 70) scoreConsistency = 16;
-    else if (pctProfitable >= 55) scoreConsistency = 12;
-    else if (pctProfitable >= 40) scoreConsistency = 7;
-    else scoreConsistency = 2;
-
-    // Component 4: Drawdown & Recovery (Max 20 pts)
-    let scoreRisk = 0;
-    let ddSubScore = 0;
-    if (maxDdPct <= 0.08) ddSubScore = 10;
-    else if (maxDdPct <= 0.15) ddSubScore = 8;
-    else if (maxDdPct <= 0.25) ddSubScore = 5;
-    else if (maxDdPct <= 0.35) ddSubScore = 2;
-    else ddSubScore = 0;
-
-    let recSubScore = 0;
-    if (recFactor >= 3.0) recSubScore = 10;
-    else if (recFactor >= 2.0) recSubScore = 8;
-    else if (recFactor >= 1.2) recSubScore = 5;
-    else if (recFactor >= 0.8) recSubScore = 3;
-    else recSubScore = 0;
-    scoreRisk = ddSubScore + recSubScore;
-
-    // Component 5: Risk-Adjusted Quality / Sharpe & Sortino (Max 15 pts)
-    let scoreQuality = 0;
-    if (oosSharpe >= 1.5) scoreQuality = 15;
-    else if (oosSharpe >= 1.1) scoreQuality = 12;
-    else if (oosSharpe >= 0.7) scoreQuality = 9;
-    else if (oosSharpe >= 0.4) scoreQuality = 5;
-    else if (oosSharpe > 0) scoreQuality = 2;
-    else scoreQuality = 0;
-
-    const totalScore = Math.min(100, Math.max(0, scoreEff + scorePf + scoreConsistency + scoreRisk + scoreQuality));
-
-    let grade: { label: string; verdict: string; color: string; bgColor: string; borderColor: string; description: string; recommendation: string };
-    if (totalScore >= 85) {
-      grade = {
-        label: "ROBUSTEZZA ECCELLENTE (GRADE A+)",
-        verdict: "Strategia Estremamente Solida e Resiliente",
-        color: "#1E4620",
-        bgColor: "#E8F5E9",
-        borderColor: "#81C784",
-        description: "La strategia dimostra un'elevata persistenza del vantaggio competitivo fuori campione (OOS), con un'eccellente tenuta dell'Efficiency Ratio, drawdown controllati e una distribuzione omogenea dei profitti tra i vari cicli temporali.",
-        recommendation: "Idonea all'impiego operativo a mercato con gestione del rischio standard. I parametri hanno mostrato stabilità e bassa sensibilità all'overfitting.",
-      };
-    } else if (totalScore >= 70) {
-      grade = {
-        label: "ROBUSTEZZA BUONA / CONFERMATA (GRADE B)",
-        verdict: "Strategia Solida con Vantaggio OOS Confermato",
-        color: "#2E7D32",
-        bgColor: "#F1F8E9",
-        borderColor: "#AED581",
-        description: "Buona conservazione delle performance sui dati Out-Of-Sample. La maggioranza delle finestre temporali si chiude in utile e il profilo di drawdown si mantiene entro livelli gestibili.",
-        recommendation: "Pronta per il live trading o per una fase di paper trading di validazione. Monitorare periodicamente l'Efficiency Ratio se il mercato entra in regimi di eccezionale volatilità.",
-      };
-    } else if (totalScore >= 50) {
-      grade = {
-        label: "ROBUSTEZZA MODERATA / CONDIZIONATA (GRADE C)",
-        verdict: "Vantaggio OOS Marginale con Segnali di Degrado",
-        color: "#E65100",
-        bgColor: "#FFF3E0",
-        borderColor: "#FFB74D",
-        description: "Si osserva un degrado non trascurabile delle metriche nel passaggio da In-Sample a Out-Of-Sample. Alcuni fold presentano oscillazioni ampie o rendimenti sotto le attese.",
-        recommendation: "Si raccomanda cautela prima del trading reale. Considerare una semplificazione delle regole di ingresso/uscita, l'allargamento della finestra IS di training o la riduzione del numero di parametri liberi.",
-      };
-    } else {
-      grade = {
-        label: "ROBUSTEZZA INSUFFICIENTE / OVERFITTING (GRADE D)",
-        verdict: "Rischio Elevato di Sovra-Ottimizzazione (Curve-Fitting)",
-        color: "#C62828",
-        bgColor: "#FFEBEE",
-        borderColor: "#EF9A9A",
-        description: "Il modello fallisce nel generalizzare sui dati mai visti: le performance OOS crollano drasticamente rispetto a quelle IS (Efficiency Ratio basso o negativo), con drawdown elevati e scarsa regolarità tra i fold.",
-        recommendation: "Non idonea al live trading nella configurazione attuale. La strategia soffre verosimilmente di data-mining bias o eccessiva complessità dei parametri.",
-      };
-    }
-
-    const subScores = [
-      {
-        id: "eff",
-        title: "Efficienza OOS / IS (WFE)",
-        score: scoreEff,
-        maxScore: 25,
-        valueFormatted: fmtNum(effRatio, 2),
-        targetText: "Target ≥ 0.65",
-        status: scoreEff >= 17 ? "optimal" : scoreEff >= 12 ? "acceptable" : "warning",
-        hint: "Rapporto tra rendimento OOS e rendimento IS: misura la resistenza all'overfitting.",
-      },
-      {
-        id: "pf",
-        title: "Redditività OOS (Profit Factor & PnL)",
-        score: scorePf,
-        maxScore: 20,
-        valueFormatted: `PF ${fmtNum(oosPf, 2)} (${fmtMoney(chainedMetrics.netProfit)})`,
-        targetText: "Target PF ≥ 1.30",
-        status: scorePf >= 14 ? "optimal" : scorePf >= 10 ? "acceptable" : "warning",
-        hint: "Capacità di generare guadagni netti sui dati futuri concatenati.",
-      },
-      {
-        id: "consistency",
-        title: "Consistenza Finestre (% Profittevoli)",
-        score: scoreConsistency,
-        maxScore: 20,
-        valueFormatted: `${chainedMetrics.profitableWindowsCount}/${chainedMetrics.totalWindowsCount} (${fmtPct(pctProfitable / 100)})`,
-        targetText: "Target ≥ 70%",
-        status: scoreConsistency >= 16 ? "optimal" : scoreConsistency >= 12 ? "acceptable" : "warning",
-        hint: "Frazione di cicli OOS indipendenti chiusi con rendimento positivo.",
-      },
-      {
-        id: "risk",
-        title: "Controllo Rischio (Max DD & Recovery)",
-        score: scoreRisk,
-        maxScore: 20,
-        valueFormatted: `DD ${fmtPct(maxDdPct)} · Rec. Factor ${fmtNum(recFactor, 2)}`,
-        targetText: "DD ≤ 15% · Rec ≥ 1.5",
-        status: scoreRisk >= 15 ? "optimal" : scoreRisk >= 10 ? "acceptable" : "warning",
-        hint: "Contenimento del drawdown massimo e rapidità di recupero del capitale.",
-      },
-      {
-        id: "quality",
-        title: "Qualità Risk-Adjusted (Sharpe & Sortino)",
-        score: scoreQuality,
-        maxScore: 15,
-        valueFormatted: `Sharpe ${fmtNum(oosSharpe, 2)} · Sortino ${fmtNum(chainedMetrics.sortinoAnnual, 2)}`,
-        targetText: "Sharpe ≥ 1.0",
-        status: scoreQuality >= 12 ? "optimal" : scoreQuality >= 7 ? "acceptable" : "warning",
-        hint: "Rendimento normalizzato per la volatilità e il downside risk dei trade.",
-      },
-    ];
-
-    return {
-      totalScore,
-      grade,
-      subScores,
-    };
+    return calculateWalkForwardRobustnessAssessment(wfResult!, chainedMetrics);
   }, [wfResult, chainedMetrics]);
 
   const underwaterChartData = useMemo(() => {
@@ -404,6 +247,68 @@ export function Step7WalkForward({
     }, 150);
   };
 
+  const handleExportPdf = async () => {
+    if (!wfResult) return;
+    try {
+      setExportingPdf(true);
+
+      const effectiveBacktestResult: BacktestResult = backtestResult || {
+        trades: allOosTrades,
+        equityCurve: (wfResult.chainPoints && wfResult.chainPoints.length > 0)
+          ? wfResult.chainPoints
+          : [{ dt: Date.now(), equity: mm.initialCapital }],
+        metrics: {
+          n: allOosTrades.length,
+          winRate: wfResult.chainedMetrics?.winRate || 0.5,
+          profitFactor: wfResult.chainedMetrics?.profitFactor || 1,
+          avgWin: 0,
+          avgLoss: 0,
+          ratioWinLoss: 1,
+          sharpeAnnual: wfResult.chainedMetrics?.sharpeAnnual || 1,
+          recoveryFactor: wfResult.chainedMetrics?.recoveryFactor || 1,
+          expectancy: 0,
+          finalEquity: (wfResult.chainPoints && wfResult.chainPoints.length > 0)
+            ? wfResult.chainPoints[wfResult.chainPoints.length - 1].equity
+            : mm.initialCapital,
+          totalReturnPct: wfResult.chainedMetrics?.netProfitPct || 0,
+          maxDD: 0,
+          maxDDPct: wfResult.chainedMetrics?.maxDDPct || 0.1,
+          maxConsWin: 3,
+          maxConsLoss: 3,
+          avgDailyDrawdownPct: 0.01,
+          dailyDrawdownSeries: [],
+          avgBarsHeld: 5,
+          byDirection: {
+            long: { n: 0, winRate: 0, pnl: 0 },
+            short: { n: 0, winRate: 0, pnl: 0 },
+          },
+          byReason: {},
+          byLegReason: {},
+          monthly: [],
+          weekly: [],
+          monthlyByDirection: [],
+        },
+        rules,
+      };
+
+      await exportWalkForwardFullSummaryPdfReport({
+        backtestResult: effectiveBacktestResult,
+        mm,
+        baseMcResult: baseMcResult || null,
+        wfResult,
+        wfConfig,
+        oosMcResult: oosMcResult || null,
+        robustnessAssessment: robustnessAssessment || null,
+        params,
+        strategyTitle: strategyTitle || "Strategia Quantitativa",
+      });
+    } catch (err) {
+      console.error("Errore durante l'esportazione del report PDF Walk-Forward:", err);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   const isWfoResult = wfResult?.mode === "wfo" || (wfResult?.wfoParamSummaries && wfResult.wfoParamSummaries.length > 0);
 
   return (
@@ -419,7 +324,18 @@ export function Step7WalkForward({
               Testa e ottimizza la strategia su finestre temporali scorrevoli Out-Of-Sample (OOS), identificando i valori ottimali per ciascun parametro e verificandone la stabilità.
             </p>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {wfResult && (
+              <Button
+                id="btn-wf-export-pdf-top"
+                onClick={handleExportPdf}
+                variant="primary"
+                disabled={exportingPdf}
+                icon={exportingPdf ? Loader2 : FileText}
+              >
+                {exportingPdf ? "Generazione PDF..." : "Esporta PDF Riepilogo"}
+              </Button>
+            )}
             <Button id="btn-wf-reset" onClick={onReset} variant="ghost" icon={RotateCcw}>
               Nuova simulazione
             </Button>
@@ -936,36 +852,50 @@ export function Step7WalkForward({
                   </div>
                 </div>
 
-                {/* Main Score Gauge */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    background: "#FFFFFF",
-                    padding: "8px 16px",
-                    borderRadius: 10,
-                    border: `1px solid ${robustnessAssessment.grade.borderColor}`,
-                    boxShadow: "0 2px 5px rgba(0,0,0,0.03)",
-                  }}
-                >
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Punteggio Finale</div>
-                    <div style={{ fontSize: 11, color: robustnessAssessment.grade.color, fontWeight: 600 }}>
-                      {robustnessAssessment.totalScore >= 70 ? "Validazione Superata ✓" : "Rischio Overfit ⚠️"}
-                    </div>
-                  </div>
+                {/* Actions & Main Score Gauge */}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <Button
+                    id="btn-wf-export-pdf-card"
+                    onClick={handleExportPdf}
+                    variant="primary"
+                    disabled={exportingPdf}
+                    icon={exportingPdf ? Loader2 : FileText}
+                    style={{ padding: "8px 14px", fontSize: 13 }}
+                  >
+                    {exportingPdf ? "Generazione PDF..." : "Esporta PDF Completo"}
+                  </Button>
+
+                  {/* Main Score Gauge */}
                   <div
                     style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 32,
-                      fontWeight: 900,
-                      color: robustnessAssessment.grade.color,
-                      lineHeight: 1,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
+                      background: "#FFFFFF",
+                      padding: "8px 16px",
+                      borderRadius: 10,
+                      border: `1px solid ${robustnessAssessment.grade.borderColor}`,
+                      boxShadow: "0 2px 5px rgba(0,0,0,0.03)",
                     }}
                   >
-                    {robustnessAssessment.totalScore}
-                    <span style={{ fontSize: 16, fontWeight: 600, color: C.muted }}>/100</span>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 10.5, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Punteggio Finale</div>
+                      <div style={{ fontSize: 11, color: robustnessAssessment.grade.color, fontWeight: 600 }}>
+                        {robustnessAssessment.totalScore >= 70 ? "Validazione Superata ✓" : "Rischio Overfit ⚠️"}
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: FONT_MONO,
+                        fontSize: 32,
+                        fontWeight: 900,
+                        color: robustnessAssessment.grade.color,
+                        lineHeight: 1,
+                      }}
+                    >
+                      {robustnessAssessment.totalScore}
+                      <span style={{ fontSize: 16, fontWeight: 600, color: C.muted }}>/100</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2474,10 +2404,21 @@ export function Step7WalkForward({
       )}
 
       {/* Footer Navigation */}
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, flexWrap: "wrap", gap: 10 }}>
         <Button id="btn-back-step-6" onClick={onBack} variant="ghost" icon={ChevronLeft}>
           Torna all'analisi di scenario
         </Button>
+        {wfResult && (
+          <Button
+            id="btn-wf-export-pdf-bottom"
+            onClick={handleExportPdf}
+            variant="primary"
+            disabled={exportingPdf}
+            icon={exportingPdf ? Loader2 : Download}
+          >
+            {exportingPdf ? "Generazione PDF in corso..." : "Esporta PDF Completo Walk-Forward"}
+          </Button>
+        )}
       </div>
     </div>
   );

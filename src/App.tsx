@@ -627,6 +627,9 @@ export default function App() {
             onRunWalkForward={handleRunWalkForward}
             onBack={() => setStep(6)}
             onReset={handleReset}
+            backtestResult={backtestResult}
+            baseMcResult={mcResult}
+            strategyTitle={strategyText ? strategyText.slice(0, 50) : "Strategia Quantitativa"}
           />
         )}
       </main>
