@@ -141,10 +141,11 @@ export function Stepper({ step, maxStep, onJump }: { step: number; maxStep: numb
 }
 
 export function KPI({ label, value, negative, id }: { label: string; value: string | number; negative?: boolean; id?: string }) {
+  const displayVal = typeof value === "number" && Number.isNaN(value) ? "—" : value ?? "—";
   return (
     <div id={id} style={{ background: "#fff", border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 12px", textAlign: "center" }}>
       <div style={{ fontFamily: FONT_SANS, fontSize: 10.5, textTransform: "uppercase", letterSpacing: ".04em", color: C.muted }}>{label}</div>
-      <div style={{ fontFamily: FONT_SANS, fontSize: 20, fontWeight: 700, color: negative ? C.red : C.primaryDark, marginTop: 4 }}>{value}</div>
+      <div style={{ fontFamily: FONT_SANS, fontSize: 20, fontWeight: 700, color: negative ? C.red : C.primaryDark, marginTop: 4 }}>{displayVal}</div>
     </div>
   );
 }

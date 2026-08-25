@@ -445,8 +445,11 @@ export function Step7WalkForward({
               type="number"
               min="20"
               max="80"
-              value={wfConfig.isPct}
-              onChange={(e) => setWfConfig({ ...wfConfig, isPct: parseInt(e.target.value, 10) })}
+              value={Number.isFinite(wfConfig.isPct) ? wfConfig.isPct : ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setWfConfig({ ...wfConfig, isPct: Number.isNaN(v) ? ("" as any) : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -456,8 +459,11 @@ export function Step7WalkForward({
               type="number"
               min="10"
               max="50"
-              value={wfConfig.oosPct}
-              onChange={(e) => setWfConfig({ ...wfConfig, oosPct: parseInt(e.target.value, 10) })}
+              value={Number.isFinite(wfConfig.oosPct) ? wfConfig.oosPct : ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setWfConfig({ ...wfConfig, oosPct: Number.isNaN(v) ? ("" as any) : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -730,8 +736,11 @@ export function Step7WalkForward({
                                 id={`input-wfo-min-${p.id}`}
                                 type="number"
                                 step="any"
-                                value={cfg.min}
-                                onChange={(e) => updateParamSweep(p.id, { min: parseFloat(e.target.value) || 0 })}
+                                value={Number.isFinite(cfg.min) ? cfg.min : ""}
+                                onChange={(e) => {
+                                  const v = parseFloat(e.target.value);
+                                  updateParamSweep(p.id, { min: Number.isNaN(v) ? 0 : v });
+                                }}
                                 style={{ ...inputStyle, padding: "3px 6px", fontSize: 11.5 }}
                               />
                             </div>
@@ -741,8 +750,11 @@ export function Step7WalkForward({
                                 id={`input-wfo-max-${p.id}`}
                                 type="number"
                                 step="any"
-                                value={cfg.max}
-                                onChange={(e) => updateParamSweep(p.id, { max: parseFloat(e.target.value) || 0 })}
+                                value={Number.isFinite(cfg.max) ? cfg.max : ""}
+                                onChange={(e) => {
+                                  const v = parseFloat(e.target.value);
+                                  updateParamSweep(p.id, { max: Number.isNaN(v) ? 0 : v });
+                                }}
                                 style={{ ...inputStyle, padding: "3px 6px", fontSize: 11.5 }}
                               />
                             </div>
@@ -753,8 +765,11 @@ export function Step7WalkForward({
                                 type="number"
                                 min="2"
                                 max="20"
-                                value={cfg.steps || 5}
-                                onChange={(e) => updateParamSweep(p.id, { steps: parseInt(e.target.value, 10) || 5 })}
+                                value={Number.isFinite(cfg.steps) ? cfg.steps : 5}
+                                onChange={(e) => {
+                                  const v = parseInt(e.target.value, 10);
+                                  updateParamSweep(p.id, { steps: Number.isNaN(v) ? 5 : v });
+                                }}
                                 style={{ ...inputStyle, padding: "3px 6px", fontSize: 11.5 }}
                               />
                             </div>

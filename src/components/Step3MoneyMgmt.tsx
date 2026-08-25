@@ -32,8 +32,11 @@ export function Step3MoneyMgmt({
           <input
             id="input-initial-capital"
             type="number"
-            value={mm.initialCapital}
-            onChange={(e) => setMm({ ...mm, initialCapital: +e.target.value })}
+            value={Number.isFinite(mm.initialCapital) ? mm.initialCapital : ""}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setMm({ ...mm, initialCapital: Number.isNaN(v) ? 0 : v });
+            }}
             style={inputStyle}
           />
         </Field>
@@ -54,8 +57,11 @@ export function Step3MoneyMgmt({
               id="input-risk-pct"
               type="number"
               step="0.1"
-              value={mm.riskPct}
-              onChange={(e) => setMm({ ...mm, riskPct: +e.target.value })}
+              value={Number.isFinite(mm.riskPct) ? mm.riskPct : ""}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                setMm({ ...mm, riskPct: Number.isNaN(v) ? 0 : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -65,8 +71,11 @@ export function Step3MoneyMgmt({
               id="input-fixed-qty"
               type="number"
               step="0.01"
-              value={mm.fixedQty}
-              onChange={(e) => setMm({ ...mm, fixedQty: +e.target.value })}
+              value={Number.isFinite(mm.fixedQty) ? mm.fixedQty : ""}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                setMm({ ...mm, fixedQty: Number.isNaN(v) ? 0 : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -76,8 +85,11 @@ export function Step3MoneyMgmt({
             id="input-spread"
             type="number"
             step="0.01"
-            value={mm.spread}
-            onChange={(e) => setMm({ ...mm, spread: +e.target.value })}
+            value={Number.isFinite(mm.spread) ? mm.spread : ""}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setMm({ ...mm, spread: Number.isNaN(v) ? 0 : v });
+            }}
             style={inputStyle}
           />
         </Field>
@@ -227,8 +239,11 @@ export function Step3MoneyMgmt({
                 step="0.1"
                 min="0"
                 max="100"
-                value={mm.dailyDDLimitPct * 100}
-                onChange={(e) => setMm({ ...mm, dailyDDLimitPct: Math.max(0, +e.target.value) / 100 })}
+                value={Number.isFinite(mm.dailyDDLimitPct) ? (mm.dailyDDLimitPct! * 100) : ""}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  setMm({ ...mm, dailyDDLimitPct: Number.isNaN(v) ? 0 : Math.max(0, v) / 100 });
+                }}
                 style={inputStyle}
               />
             </Field>

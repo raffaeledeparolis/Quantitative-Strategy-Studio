@@ -16,7 +16,7 @@ import {
   WalkForwardConfig, WalkForwardResult,
 } from "./types";
 import { mergeCsvFiles, computeColumnStats, parseCsvFile } from "./lib/csvHelper";
-import { validateRules, buildDefaultTemplate, extractTweakableParams } from "./lib/ruleParser";
+import { validateRules, buildDefaultTemplate, extractTweakableParams, parseStrategyHeuristically } from "./lib/ruleParser";
 import { runBacktest, computeMetrics } from "./lib/backtestEngine";
 import { runMonteCarlo } from "./lib/monteCarloEngine";
 import { runParameterSweep, optimizeMultiParam, OPTIM_OBJECTIVES } from "./lib/scenarioEngine";
@@ -159,38 +159,60 @@ export default function App() {
   }, [files, priceFileId, mm]);
 
   // AI Rule Generation
-  const handleGenerateRules = async () => {
-    if (!strategyText.trim() || !merged) return;
+  const handleGenerateRules = async (customText?: string) => {
+    const textToUse = (typeof customText === "string" ? customText : strategyText).trim();
+    if (!textToUse) return;
     setAiLoading(true);
     setAiError(null);
+
+    const columnsToSend =
+      merged?.columns && merged.columns.length > 0
+        ? merged.columns
+        : allColumns.length > 0
+        ? allColumns
+        : ["open", "high", "low", "close"];
+
+    const sampleBarsToSend = merged?.bars?.slice(0, 10) || [];
 
     try {
       const response = await fetch("/api/generate-rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          strategyText,
-          columns: merged.columns,
-          sampleBars: merged.bars.slice(0, 10),
-          stats,
+          strategyText: textToUse,
+          columns: columnsToSend,
+          sampleBars: sampleBarsToSend,
+          stats: stats || {},
         }),
       });
 
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || `Errore server: ${response.status}`);
+      const contentType = response.headers.get("content-type") || "";
+      if (response.ok && contentType.includes("application/json")) {
+        const data = await response.json();
+        const rules = data.rules;
+        if (rules && typeof rules === "object") {
+          setRulesJson(JSON.stringify(rules, null, 2));
+          setRulesNotes(data.warning ? `${data.warning} ${data.notes || ""}`.trim() : (data.notes || rules.notes || ""));
+          setRulesSource(data.fallbackUsed ? "heuristic" : "ai");
+          setAiError(null);
+          return;
+        }
       }
 
-      const data = await response.json();
-      const rules = data.rules;
-      setRulesJson(JSON.stringify(rules, null, 2));
-      setRulesNotes(data.warning ? `${data.warning} ${data.notes || ""}`.trim() : (data.notes || rules.notes || ""));
-      setRulesSource(data.fallbackUsed ? "heuristic" : "ai");
-      if (data.warning) {
-        setAiError(null);
-      }
+      // If server returned non-JSON (like Vite fallback HTML) or error status, use local heuristic parser
+      console.warn("Risposta server non valida o non-JSON. Applicazione del parser euristico locale.");
+      const heuristicRules = parseStrategyHeuristically(textToUse, columnsToSend, stats || {});
+      setRulesJson(JSON.stringify(heuristicRules, null, 2));
+      setRulesNotes(heuristicRules.notes || "Regole generate tramite interprete logico della strategia.");
+      setRulesSource("heuristic");
+      setAiError(null);
     } catch (err: any) {
-      setAiError(`Impossibile generare le regole: ${err.message || "Errore sconosciuto"}`);
+      console.warn("Errore durante la chiamata API di generazione regole, applicazione del parser locale:", err);
+      const heuristicRules = parseStrategyHeuristically(textToUse, columnsToSend, stats || {});
+      setRulesJson(JSON.stringify(heuristicRules, null, 2));
+      setRulesNotes(heuristicRules.notes || "Regole generate tramite interprete logico della strategia.");
+      setRulesSource("heuristic");
+      setAiError(null);
     } finally {
       setAiLoading(false);
     }
@@ -561,7 +583,6 @@ export default function App() {
             onScenario={() => {
               setStep(6);
               setMaxStep((p) => Math.max(p, 6));
-              if (!scenarioResult) handleRunScenarioSweep();
             }}
           />
         )}

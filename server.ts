@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -11,9 +11,10 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms + M
 
 // Candidate models in order of preference for text/rule generation
 const CANDIDATE_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
   "gemini-3.7-flash",
   "gemini-3.1-flash-lite",
-  "gemini-flash-latest",
 ];
 
 // Fallback heuristic parser in case of complete AI API unavailability
@@ -85,7 +86,18 @@ function parseStrategyHeuristically(
     let match;
     while ((match = colRegex.exec(strategyText)) !== null) {
       const op = match[1];
-      const rightRaw = match[2];
+      let rightRaw = match[2];
+
+      // Handle avg_ / media_ references
+      if (rightRaw.startsWith("avg_") || rightRaw.startsWith("media_")) {
+        const base = rightRaw.replace(/^(avg_|media_)/, "");
+        if (columnStats?.[base]?.mean != null) {
+          rightRaw = String(columnStats[base].mean);
+        } else if (allCols.includes(base)) {
+          rightRaw = base;
+        }
+      }
+
       const rightNum = parseFloat(rightRaw);
       const rightVal = isNaN(rightNum) ? rightRaw : rightNum;
       
@@ -250,15 +262,10 @@ Rispondi SOLO con il JSON valido.`;
           const ai = getAI();
           const response = await ai.models.generateContent({
             model: modelName,
-            contents: [
-              {
-                role: "user",
-                parts: [{ text: `${systemPrompt}\n\nDescrizione utente:\n${strategyText}` }],
-              },
-            ],
+            contents: `Traduci questa strategia in JSON:\n\n${strategyText}`,
             config: {
+              systemInstruction: systemPrompt,
               responseMimeType: "application/json",
-              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
             },
           });
 

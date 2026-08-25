@@ -30,6 +30,10 @@ Entra long quando trend_prob > 0.65 E daily_return > avg_daily_return E price_re
 Entra short quando trend_prob < 0.35 E daily_return < avg_daily_return E price_regime > avg_price_regime E lma > avg_lma.
 Stop Loss fisso a 0.5x ATR. Take profit 1 a 0.75x ATR, chiudi il 50% della posizione. Take profit 2 a 3x ATR, chiudi il restante 50%. Timeout dopo 20 candele.`;
 
+const DEFAULT_SAMPLE_PROMPT = `Entra long quando trend_prob > 0.65 E daily_return > avg_daily_return E price_regime > avg_price_regime E lma > avg_lma.
+Entra short quando trend_prob < 0.35 E daily_return < avg_daily_return E price_regime > avg_price_regime E lma > avg_lma.
+Stop Loss fisso a 0.5x ATR. Take profit 1 a 0.75x ATR, chiudi il 50% della posizione. Take profit 2 a 3x ATR, chiudi il restante 50%. Timeout dopo 20 candele.`;
+
 export function Step2Strategy({
   allColumns,
   strategyText,
@@ -47,6 +51,22 @@ export function Step2Strategy({
   onNext,
 }: Step2StrategyProps) {
   const [copied, setCopied] = useState(false);
+
+  const handleApplySamplePrompt = () => {
+    setStrategyText(DEFAULT_SAMPLE_PROMPT);
+  };
+
+  const handleAiButtonClick = () => {
+    if (!strategyText.trim()) {
+      setStrategyText(DEFAULT_SAMPLE_PROMPT);
+      // Generate with default sample prompt
+      setTimeout(() => {
+        onGenerateRules();
+      }, 50);
+      return;
+    }
+    onGenerateRules();
+  };
 
   // Check JSON syntax status
   const jsonSyntaxError = useMemo<string | null>(() => {
@@ -153,17 +173,43 @@ export function Step2Strategy({
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
             <Button
               id="btn-generate-rules-ai"
-              onClick={onGenerateRules}
-              disabled={!strategyText.trim() || aiLoading}
+              onClick={handleAiButtonClick}
+              disabled={aiLoading}
               icon={aiLoading ? Loader2 : Wand2}
             >
-              {aiLoading ? "Genero le regole con AI..." : "Compila JSON con AI"}
+              {aiLoading ? "Genero le regole con AI..." : "Genera regole con AI"}
             </Button>
-            {strategyText.trim() && (
-              <span style={{ fontSize: 12, color: C.muted }}>
-                Premi per convertire il testo in regole JSON eseguibili dal backtester.
-              </span>
+
+            {!strategyText.trim() && (
+              <button
+                type="button"
+                id="btn-use-sample-prompt"
+                onClick={handleApplySamplePrompt}
+                style={{
+                  fontFamily: FONT_SANS,
+                  fontSize: 12,
+                  padding: "6px 11px",
+                  borderRadius: 6,
+                  border: `1px solid ${C.border}`,
+                  background: "#fff",
+                  color: C.primaryDark,
+                  cursor: "pointer",
+                  fontWeight: 600,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <Sparkles size={13} color={C.primary} />
+                Carica testo di esempio
+              </button>
             )}
+
+            <span style={{ fontSize: 12, color: C.muted }}>
+              {strategyText.trim()
+                ? "Premi per convertire la strategia in regole JSON eseguibili dal backtester."
+                : "Clicca per inserire l'esempio o digita la tua logica in italiano."}
+            </span>
           </div>
 
           {aiError && (

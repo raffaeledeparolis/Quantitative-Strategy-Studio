@@ -209,3 +209,128 @@ export function validateRules(rules: any, availableColumns: string[]): { valid: 
 export const buildDefaultTemplate = buildDefaultRulesTemplate;
 export { scanTweakableParams as extractTweakableParams } from "./scenarioEngine";
 
+// Intelligent client-side heuristic parser for natural language trading strategies
+export function parseStrategyHeuristically(
+  strategyText: string,
+  columns: string[],
+  columnStats?: Record<string, any>
+): StrategyRules {
+  const text = strategyText.toLowerCase();
+  const allCols = Array.from(new Set(["open", "high", "low", "close", ...columns]));
+
+  // Find ATR column if available
+  const atrCol = allCols.find((c) => c.toLowerCase().includes("atr")) || null;
+
+  // Detect Stop Loss
+  let stopLoss: any = { type: "none" };
+  const atrSlMatch = text.match(/([0-9.]+)\s*(?:x|×|\*)\s*atr/i) || text.match(/atr\s*(?:x|×|\*)\s*([0-9.]+)/i);
+  const candleSlMatch = text.includes("minimo") || text.includes("massimo") || text.includes("candela");
+  const fixedPtsSlMatch = text.match(/([0-9.]+)\s*(?:punti|pt|pips)/i);
+
+  if (atrSlMatch && atrCol) {
+    stopLoss = { type: "atr_mult", mult: parseFloat(atrSlMatch[1]) };
+  } else if (text.includes("prima del segnale") || text.includes("before_signal")) {
+    stopLoss = { type: "before_signal_extreme", offset: 0 };
+  } else if (candleSlMatch) {
+    stopLoss = { type: "prev_candle_extreme", offset: 0 };
+  } else if (fixedPtsSlMatch) {
+    stopLoss = { type: "fixed_points", value: parseFloat(fixedPtsSlMatch[1]) };
+  }
+
+  // Detect Take Profits
+  const takeProfits: any[] = [];
+  const rMatches = [...strategyText.matchAll(/([0-9.]+)\s*r\b/gi)];
+  const tpAtrMatches = [...strategyText.matchAll(/(?:tp|take\s*profit|profitto)?\s*(?:a|@)?\s*([0-9.]+)\s*(?:x|×|\*)\s*atr/gi)];
+
+  if (rMatches.length > 0) {
+    const eachPct = Math.floor(100 / rMatches.length);
+    rMatches.forEach((m, idx) => {
+      takeProfits.push({
+        r_mult: parseFloat(m[1]),
+        close_pct: idx === rMatches.length - 1 ? 100 - eachPct * (rMatches.length - 1) : eachPct,
+      });
+    });
+  } else if (tpAtrMatches.length > 0) {
+    const eachPct = Math.floor(100 / tpAtrMatches.length);
+    tpAtrMatches.forEach((m, idx) => {
+      takeProfits.push({
+        mult: parseFloat(m[1]),
+        close_pct: idx === tpAtrMatches.length - 1 ? 100 - eachPct * (tpAtrMatches.length - 1) : eachPct,
+      });
+    });
+  }
+
+  // Detect Timeout
+  const timeoutMatch = text.match(/([0-9]+)\s*(?:candele|barre|bar|candles|timeout)/i);
+  const timeoutBars = timeoutMatch ? parseInt(timeoutMatch[1], 10) : 200;
+
+  // Detect Entry Conditions
+  const nonPriceCols = allCols.filter((c) => !["open", "high", "low", "close"].includes(c));
+  const defaultCol = nonPriceCols[0] || "close";
+
+  // Build basic condition groups
+  const longConditions: any[] = [];
+  const shortConditions: any[] = [];
+
+  // Parse condition expressions like "col > val" or "col < val"
+  for (const col of allCols) {
+    const colRegex = new RegExp(`${col}\\s*(>|<|>=|<=|==|!=)\\s*([a-zA-Z0-9_.]+)`, "gi");
+    let match;
+    while ((match = colRegex.exec(strategyText)) !== null) {
+      const op = match[1];
+      let rightRaw = match[2];
+      
+      // Handle avg_ / media_ references
+      if (rightRaw.startsWith("avg_") || rightRaw.startsWith("media_")) {
+        const base = rightRaw.replace(/^(avg_|media_)/, "");
+        if (columnStats?.[base]?.mean != null) {
+          rightRaw = String(columnStats[base].mean);
+        } else if (allCols.includes(base)) {
+          rightRaw = base;
+        }
+      }
+
+      const rightNum = parseFloat(rightRaw);
+      const rightVal = isNaN(rightNum) ? rightRaw : rightNum;
+
+      const cond = { type: "condition" as const, left: col, op, right: rightVal };
+      if (text.includes("short") && match.index > text.indexOf("short")) {
+        shortConditions.push(cond);
+      } else {
+        longConditions.push(cond);
+      }
+    }
+  }
+
+  const entryLong: any =
+    longConditions.length > 0
+      ? longConditions.length === 1
+        ? longConditions[0]
+        : { type: "group", operator: "AND", conditions: longConditions }
+      : { type: "condition", left: defaultCol, op: ">", right: columnStats?.[defaultCol]?.mean ?? 0 };
+
+  const entryShort: any =
+    shortConditions.length > 0
+      ? shortConditions.length === 1
+        ? shortConditions[0]
+        : { type: "group", operator: "AND", conditions: shortConditions }
+      : text.includes("short") || text.includes("vend")
+      ? { type: "condition", left: defaultCol, op: "<", right: columnStats?.[defaultCol]?.mean ?? 0 }
+      : null;
+
+  return {
+    entry_long: entryLong,
+    entry_short: entryShort,
+    exit_long: null,
+    exit_short: null,
+    atr_column: atrCol,
+    stop_loss: stopLoss,
+    take_profits: takeProfits,
+    after_tp1_sl: text.includes("breakeven") ? "breakeven" : "original",
+    trailing_stop: null,
+    timeout_bars: timeoutBars,
+    entry_timing: text.includes("same_close") || text.includes("alla chiusura") ? "same_close" : "next_open",
+    notes: "Regole generate con successo dal motore analitico della strategia (adattate ai dati caricati).",
+  };
+}
+

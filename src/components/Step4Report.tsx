@@ -123,8 +123,8 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
           <KPI id="kpi-final-equity" label="Capitale finale" value={fmtMoney(metrics.finalEquity)} />
           <KPI id="kpi-win-rate" label="Win rate" value={fmtPct(metrics.winRate)} />
           <KPI id="kpi-profit-factor" label="Profit factor" value={fmtNum(metrics.profitFactor)} />
-          <KPI id="kpi-max-dd" label="Max drawdown" value={"-" + fmtPct(metrics.maxDDPct)} negative />
-          <KPI id="kpi-avg-daily-dd" label="Drawdown giornaliero medio" value={"-" + fmtPct(Math.abs(metrics.avgDailyDrawdownPct))} negative={metrics.avgDailyDrawdownPct < 0} />
+          <KPI id="kpi-max-dd" label="Max drawdown" value={Number.isFinite(metrics.maxDDPct) ? "-" + fmtPct(metrics.maxDDPct) : "—"} negative />
+          <KPI id="kpi-avg-daily-dd" label="Drawdown giornaliero medio" value={Number.isFinite(metrics.avgDailyDrawdownPct) ? "-" + fmtPct(Math.abs(metrics.avgDailyDrawdownPct)) : "—"} negative={metrics.avgDailyDrawdownPct < 0} />
           <KPI id="kpi-num-trades" label="N. trade" value={metrics.n} />
           <KPI id="kpi-expectancy" label="Expectancy/trade" value={fmtMoney(metrics.expectancy)} negative={metrics.expectancy < 0} />
           <KPI id="kpi-avg-bars" label="Durata media (candele)" value={fmtNum(metrics.avgBarsHeld, 1)} />
@@ -200,13 +200,15 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
               }}
             />
             <ReferenceLine y={0} stroke="#999" />
-            <ReferenceLine
-              y={metrics.avgDailyDrawdownPct * 100}
-              stroke={C.amber}
-              strokeDasharray="4 3"
-              strokeWidth={1.5}
-              label={{ value: "media", fontSize: 9.5, fill: C.amber, position: "insideTopLeft" }}
-            />
+            {Number.isFinite(metrics.avgDailyDrawdownPct) && (
+              <ReferenceLine
+                y={metrics.avgDailyDrawdownPct * 100}
+                stroke={C.amber}
+                strokeDasharray="4 3"
+                strokeWidth={1.5}
+                label={{ value: "media", fontSize: 9.5, fill: C.amber, position: "insideTopLeft" }}
+              />
+            )}
             <Bar dataKey="ddPctScaled" isAnimationActive={false}>
               {dailyDDChartData.map((d, i) => (
                 <Cell key={i} fill={d.ddPctScaled < 0 ? C.red : "transparent"} />

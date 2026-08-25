@@ -106,8 +106,11 @@ export function Step5MonteCarlo({
               step="100"
               min="100"
               max="20000"
-              value={config.iterations}
-              onChange={(e) => setConfig({ ...config, iterations: parseInt(e.target.value, 10) })}
+              value={Number.isFinite(config.iterations) ? config.iterations : ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                setConfig({ ...config, iterations: Number.isNaN(v) ? ("" as any) : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -129,8 +132,11 @@ export function Step5MonteCarlo({
               step="5"
               min="1"
               max="99"
-              value={config.ruinThresholdPct}
-              onChange={(e) => setConfig({ ...config, ruinThresholdPct: parseFloat(e.target.value) })}
+              value={Number.isFinite(config.ruinThresholdPct) ? config.ruinThresholdPct : ""}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                setConfig({ ...config, ruinThresholdPct: Number.isNaN(v) ? ("" as any) : v });
+              }}
               style={inputStyle}
             />
           </Field>
@@ -263,8 +269,10 @@ export function Step5MonteCarlo({
                   <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 9 }} tickFormatter={(v) => fmtPct(v, 0)} />
                   <YAxis tick={{ fontSize: 9 }} width={28} />
                   <Tooltip formatter={(v: any) => [v, "# simulazioni"]} labelFormatter={(v: any) => fmtPct(v)} />
-                  <ReferenceLine x={metrics.totalReturnPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
-                  <Bar dataKey="count" fill={C.primary} fillOpacity={0.55} isAnimationActive={false} />
+                  {Number.isFinite(metrics.totalReturnPct) && (
+                    <ReferenceLine x={metrics.totalReturnPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  )}
+                  <Bar dataKey="count" fill={C.primary} fillOpacity={0.5} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
             </Card>
@@ -275,7 +283,9 @@ export function Step5MonteCarlo({
                   <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 9 }} tickFormatter={(v) => fmtPct(v, 0)} />
                   <YAxis tick={{ fontSize: 9 }} width={28} />
                   <Tooltip formatter={(v: any) => [v, "# simulazioni"]} labelFormatter={(v: any) => fmtPct(v)} />
-                  <ReferenceLine x={metrics.maxDDPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  {Number.isFinite(metrics.maxDDPct) && (
+                    <ReferenceLine x={metrics.maxDDPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  )}
                   <Bar dataKey="count" fill={C.red} fillOpacity={0.45} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
@@ -287,7 +297,9 @@ export function Step5MonteCarlo({
                   <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 9 }} tickFormatter={(v) => fmtPct(v, 1)} />
                   <YAxis tick={{ fontSize: 9 }} width={28} />
                   <Tooltip formatter={(v: any) => [v, "# simulazioni"]} labelFormatter={(v: any) => fmtPct(v)} />
-                  <ReferenceLine x={metrics.avgDailyDrawdownPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  {Number.isFinite(metrics.avgDailyDrawdownPct) && (
+                    <ReferenceLine x={metrics.avgDailyDrawdownPct} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  )}
                   <Bar dataKey="count" fill="#2e86ab" fillOpacity={0.5} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>
@@ -299,7 +311,9 @@ export function Step5MonteCarlo({
                   <XAxis dataKey="label" type="number" domain={["dataMin", "dataMax"]} tick={{ fontSize: 9 }} tickFormatter={(v) => fmtNum(v, 1)} />
                   <YAxis tick={{ fontSize: 9 }} width={28} />
                   <Tooltip formatter={(v: any) => [v, "# simulazioni"]} labelFormatter={(v: any) => fmtNum(v)} />
-                  <ReferenceLine x={Math.min(metrics.profitFactor, 10)} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  {Number.isFinite(metrics.profitFactor) && (
+                    <ReferenceLine x={Math.min(metrics.profitFactor, 10)} stroke={C.red} strokeWidth={1.6} label={{ value: "reale", fontSize: 9, fill: C.red, position: "top" }} />
+                  )}
                   <Bar dataKey="count" fill={C.amber} fillOpacity={0.5} isAnimationActive={false} />
                 </BarChart>
               </ResponsiveContainer>

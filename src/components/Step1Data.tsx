@@ -2,7 +2,7 @@ import React, { useRef } from "react";
 import { Upload, FileText, Settings2, Trash2, AlertTriangle, CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import { C, FONT_SERIF, FONT_SANS, FONT_MONO, Card, Button, inputStyle } from "./CommonUI";
 import { CsvParsedFile, Bar, ColumnStat } from "../types";
-import { fmtDT, fmtNum, parseCsvFile } from "../lib/csvHelper";
+import { fmtDT, fmtNum, parseCsvFile, mergeCsvFiles } from "../lib/csvHelper";
 import { generateSampleCsv } from "../sampleData";
 
 interface Step1DataProps {
@@ -60,7 +60,8 @@ export function Step1Data({
     const parsed = parseCsvFile(text, "sample_gold_1h.csv");
     setFiles([parsed]);
     setPriceFileId(parsed.id);
-    setMerged(null);
+    const m = mergeCsvFiles([parsed], parsed.id);
+    setMerged(m);
   };
 
   const canProceed = merged && merged.bars.length > 0;

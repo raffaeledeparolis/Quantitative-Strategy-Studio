@@ -302,7 +302,22 @@ export function Step6Scenario({
       <Card style={{ marginBottom: 20 }}>
         <div style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-            <span style={{ fontSize: 24 }}>🔬</span>
+            <span
+              id="icon-scenario-header"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                borderRadius: 8,
+                background: C.primaryLight,
+                color: C.primaryDark,
+                flexShrink: 0,
+              }}
+            >
+              <Sliders size={20} strokeWidth={2.2} />
+            </span>
             <h2 style={{ fontFamily: FONT_SERIF, fontSize: 22, color: C.primaryDark, margin: 0 }}>
               6. Analisi di Scenario &amp; Ottimizzazione Parametrica
             </h2>
@@ -852,12 +867,14 @@ export function Step6Scenario({
                         labelFormatter={(val) => `Parametro: ${val}`}
                         formatter={(val: any) => [activeMeta.format(val), activeMeta.label]}
                       />
-                      <ReferenceLine
-                        x={activeSweep.baseValue}
-                        stroke={C.amber}
-                        strokeDasharray="4 3"
-                        label={{ value: `base: ${activeSweep.baseValue}`, fill: C.amber, fontSize: 10, position: "top" }}
-                      />
+                      {Number.isFinite(activeSweep.baseValue) && (
+                        <ReferenceLine
+                          x={activeSweep.baseValue}
+                          stroke={C.amber}
+                          strokeDasharray="4 3"
+                          label={{ value: `base: ${activeSweep.baseValue}`, fill: C.amber, fontSize: 10, position: "top" }}
+                        />
+                      )}
                       <Line type="monotone" dataKey={activeMetricKey} stroke={C.primary} strokeWidth={2.4} dot={{ r: 4, fill: C.primary }} activeDot={{ r: 6 }} />
                     </LineChart>
                   </ResponsiveContainer>
@@ -1868,10 +1885,11 @@ export function Step6Scenario({
                           <input
                             type="number"
                             step="any"
-                            value={cfg.min ?? ""}
-                            onChange={(e) =>
-                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, min: parseFloat(e.target.value) } })
-                            }
+                            value={Number.isFinite(cfg.min) ? cfg.min : ""}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, min: Number.isNaN(v) ? ("" as any) : v } });
+                            }}
                             style={{ ...inputStyle, padding: "5px 8px", fontSize: 12 }}
                           />
                         </Field>
@@ -1879,10 +1897,11 @@ export function Step6Scenario({
                           <input
                             type="number"
                             step="any"
-                            value={cfg.max ?? ""}
-                            onChange={(e) =>
-                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, max: parseFloat(e.target.value) } })
-                            }
+                            value={Number.isFinite(cfg.max) ? cfg.max : ""}
+                            onChange={(e) => {
+                              const v = parseFloat(e.target.value);
+                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, max: Number.isNaN(v) ? ("" as any) : v } });
+                            }}
                             style={{ ...inputStyle, padding: "5px 8px", fontSize: 12 }}
                           />
                         </Field>
@@ -1891,10 +1910,11 @@ export function Step6Scenario({
                             type="number"
                             min="2"
                             max="30"
-                            value={cfg.steps ?? 7}
-                            onChange={(e) =>
-                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, steps: parseInt(e.target.value, 10) } })
-                            }
+                            value={Number.isFinite(cfg.steps) ? cfg.steps : 7}
+                            onChange={(e) => {
+                              const v = parseInt(e.target.value, 10);
+                              setSweepConfigs({ ...sweepConfigs, [p.id]: { ...cfg, steps: Number.isNaN(v) ? 7 : v } });
+                            }}
                             style={{ ...inputStyle, padding: "5px 8px", fontSize: 12 }}
                           />
                         </Field>
