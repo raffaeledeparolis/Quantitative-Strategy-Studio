@@ -21,8 +21,27 @@ export function Step3MoneyMgmt({
   onRunSimulation,
   onBack,
 }: Step3MoneyMgmtProps) {
-  const sizingBlockedByNoSL =
-    mm.sizingMode === "risk" && rulesParsed && (!rulesParsed.stop_loss || rulesParsed.stop_loss.type === "none");
+  const hasStrategySl = Boolean(rulesParsed && rulesParsed.stop_loss && rulesParsed.stop_loss.type !== "none");
+  const hasMonetarySl = Boolean(mm.monetarySLEnabled && mm.monetarySLValue && mm.monetarySLValue > 0);
+  const sizingBlockedByNoSL = mm.sizingMode === "risk" && !hasStrategySl && !hasMonetarySl;
+
+  const currentPointVal = mm.pointValue && mm.pointValue > 0 ? mm.pointValue : 1;
+  const currentFixedQty = mm.fixedQty && mm.fixedQty > 0 ? mm.fixedQty : 1;
+
+  const calculatedSlPoints = mm.monetarySLValue && mm.monetarySLValue > 0
+    ? (mm.monetarySLValue / (currentFixedQty * currentPointVal)).toFixed(2)
+    : null;
+
+  const calculatedTpPoints = mm.monetaryTpValue && mm.monetaryTpValue > 0
+    ? (mm.monetaryTpValue / (currentFixedQty * currentPointVal)).toFixed(2)
+    : null;
+
+  const tpClosePct = mm.monetaryTpClosePct && mm.monetaryTpClosePct > 0 ? mm.monetaryTpClosePct : 50;
+  const closedQty = ((currentFixedQty * tpClosePct) / 100).toFixed(2);
+  const remainingQty = (currentFixedQty - (currentFixedQty * tpClosePct) / 100).toFixed(2);
+  const partialCashGain = mm.monetaryTpValue && mm.monetaryTpValue > 0
+    ? ((mm.monetaryTpValue * tpClosePct) / 100).toFixed(2)
+    : null;
 
   return (
     <Card id="step-3-card">
@@ -52,7 +71,7 @@ export function Step3MoneyMgmt({
           </select>
         </Field>
         {mm.sizingMode === "risk" ? (
-          <Field label="Rischio per trade (% equity)" hint={sizingBlockedByNoSL ? "⚠ La strategia non ha uno Stop Loss: passa a 'quantità fissa'." : undefined}>
+          <Field label="Rischio per trade (% equity)" hint={sizingBlockedByNoSL ? "⚠ La strategia non ha uno Stop Loss: imposta uno Stop Loss monetario qui sotto oppure passa a 'quantità fissa'." : undefined}>
             <input
               id="input-risk-pct"
               type="number"
@@ -66,7 +85,7 @@ export function Step3MoneyMgmt({
             />
           </Field>
         ) : (
-          <Field label="Quantità fissa per trade">
+          <Field label="Quantità fissa per trade (lotti/contratti)">
             <input
               id="input-fixed-qty"
               type="number"
@@ -80,6 +99,20 @@ export function Step3MoneyMgmt({
             />
           </Field>
         )}
+        <Field label="Valore di 1 punto ($ / € per contratto)" hint="Default 1.0 (es. 1 pt = $1 per azioni/forex, $20 per NQ mini, $50 per ES)">
+          <input
+            id="input-point-value"
+            type="number"
+            step="0.01"
+            min="0.0001"
+            value={Number.isFinite(mm.pointValue) ? mm.pointValue : 1}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              setMm({ ...mm, pointValue: Number.isNaN(v) || v <= 0 ? 1 : v });
+            }}
+            style={inputStyle}
+          />
+        </Field>
         <Field label="Spread (punti prezzo, round-turn)" hint="0 = simulazione lorda senza costi">
           <input
             id="input-spread"
@@ -117,6 +150,129 @@ export function Step3MoneyMgmt({
             <option value="same_close">Chiusura candela del segnale</option>
           </select>
         </Field>
+      </div>
+
+      {/* Sezione Stop Loss & Take Profit Monetario con Chiusura Parziale */}
+      <div
+        id="box-monetary-sl-tp"
+        style={{
+          marginTop: 18,
+          marginBottom: 16,
+          background: "#f8fafc",
+          border: `1.5px solid ${C.border}`,
+          borderRadius: 10,
+          padding: 16,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontFamily: FONT_SANS, fontSize: 13.5, fontWeight: 700, color: C.primaryDark }}>
+            Gestione Monetaria di Rischio e Profitto (SL / TP in $ con Chiusura Parziale)
+          </div>
+          <span style={{ fontSize: 11, padding: "2px 8px", background: "#e2e8f0", borderRadius: 12, color: "#475569", fontWeight: 600 }}>
+            Opzioni Avanzate MM
+          </span>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {/* Stop Loss Monetario */}
+          <div style={{ background: "#ffffff", border: `1px solid ${C.border}`, borderRadius: 8, padding: 12 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 8 }}>
+              <input
+                id="checkbox-monetary-sl"
+                type="checkbox"
+                checked={Boolean(mm.monetarySLEnabled)}
+                onChange={(e) => setMm({ ...mm, monetarySLEnabled: e.target.checked })}
+                style={{ width: 15, height: 15, accentColor: C.primary, cursor: "pointer" }}
+              />
+              <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: C.primaryDark }}>
+                Stop Loss Monetario ($)
+              </span>
+            </label>
+            {mm.monetarySLEnabled && (
+              <div>
+                <Field label="Massima perdita per trade ($)" hint="Interviene se il trade perde questo importo monetario complessivo">
+                  <input
+                    id="input-monetary-sl-val"
+                    type="number"
+                    step="10"
+                    min="1"
+                    value={mm.monetarySLValue != null ? mm.monetarySLValue : ""}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      setMm({ ...mm, monetarySLValue: Number.isNaN(v) ? null : v });
+                    }}
+                    placeholder="es. 500"
+                    style={inputStyle}
+                  />
+                </Field>
+                {calculatedSlPoints && (
+                  <div style={{ fontSize: 11.5, color: "#475569", background: "#f1f5f9", padding: "6px 8px", borderRadius: 6, marginTop: 6 }}>
+                    Distanza equivalente: <b>{calculatedSlPoints} punti</b> di prezzo (calcolata su {currentFixedQty} lotti × {currentPointVal}$/pt).
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Take Profit Monetario con Chiusura Parziale */}
+          <div style={{ background: "#ffffff", border: `1px solid ${C.border}`, borderRadius: 8, padding: 12 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: 8 }}>
+              <input
+                id="checkbox-monetary-tp"
+                type="checkbox"
+                checked={Boolean(mm.monetaryTPEnabled)}
+                onChange={(e) => setMm({ ...mm, monetaryTPEnabled: e.target.checked })}
+                style={{ width: 15, height: 15, accentColor: C.primary, cursor: "pointer" }}
+              />
+              <span style={{ fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: C.primaryDark }}>
+                Take Profit Monetario ($) + Chiusura Parziale
+              </span>
+            </label>
+            {mm.monetaryTPEnabled && (
+              <div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <Field label="Target di profitto ($)">
+                    <input
+                      id="input-monetary-tp-val"
+                      type="number"
+                      step="10"
+                      min="1"
+                      value={mm.monetaryTpValue != null ? mm.monetaryTpValue : ""}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        setMm({ ...mm, monetaryTpValue: Number.isNaN(v) ? null : v });
+                      }}
+                      placeholder="es. 1000"
+                      style={inputStyle}
+                    />
+                  </Field>
+                  <Field label="Chiusura parziale (%)">
+                    <select
+                      id="select-monetary-tp-close-pct"
+                      value={mm.monetaryTpClosePct || 50}
+                      onChange={(e) => setMm({ ...mm, monetaryTpClosePct: parseFloat(e.target.value) })}
+                      style={inputStyle}
+                    >
+                      <option value={25}>25% della posizione</option>
+                      <option value={33.33}>33% (1/3 posizione)</option>
+                      <option value={50}>50% (metà posizione)</option>
+                      <option value={66.67}>67% (2/3 posizione)</option>
+                      <option value={75}>75% della posizione</option>
+                      <option value={100}>100% (chiusura totale)</option>
+                    </select>
+                  </Field>
+                </div>
+                {calculatedTpPoints && (
+                  <div style={{ fontSize: 11.5, color: "#475569", background: "#f1f5f9", padding: "6px 8px", borderRadius: 6, marginTop: 6, lineHeight: 1.45 }}>
+                    Distanza Target: <b>+{calculatedTpPoints} punti</b>.
+                    <br />
+                    Al raggiungimento: liquida il <b>{tpClosePct}%</b> ({closedQty} lotti) incassando <b>+${partialCashGain}</b>, lasciando <b>{remainingQty} lotti</b> a mercato.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {mm.entryTiming === "intrabar" && (

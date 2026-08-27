@@ -267,6 +267,9 @@ const JSON_HELP_SECTIONS = [
 // Punti fissi dall'entry
 {"type":"fixed_points","value":15}
 
+// Stop Loss Monetario ($ o € max per trade)
+{"type":"monetary","value":500}
+
 // Minimo/massimo della CANDELA SEGNALE stessa
 {"type":"prev_candle_low","offset":0}      // solo long
 {"type":"prev_candle_high","offset":0}     // solo short
@@ -296,6 +299,12 @@ const JSON_HELP_SECTIONS = [
 "take_profits": [
   {"mult": 0.75, "close_pct": 50},
   {"mult": 3.0,  "close_pct": 50}
+]
+
+// oppure, monetario ($ con chiusura parziale):
+"take_profits": [
+  {"monetary": 500,  "close_pct": 50},
+  {"monetary": 1000, "close_pct": 50}
 ]`,
     note: "La somma dei close_pct non può superare 100. Se è inferiore a 100, il residuo resta aperto fino a SL, timeout o uscita da segnale.",
   },

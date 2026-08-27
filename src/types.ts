@@ -24,6 +24,7 @@ export interface StopLossNode {
     | "atr_mult"
     | "none"
     | "fixed_points"
+    | "monetary"
     | "prev_candle_low"
     | "prev_candle_high"
     | "prev_candle_extreme"
@@ -38,6 +39,7 @@ export interface StopLossNode {
 export interface TakeProfitLeg {
   r_mult?: number;
   mult?: number;
+  monetary?: number;
   close_pct: number;
 }
 
@@ -89,6 +91,12 @@ export interface MoneyManagement {
   riskPct: number;
   fixedQty: number;
   spread: number;
+  pointValue?: number;
+  monetarySLEnabled?: boolean;
+  monetarySLValue?: number | null;
+  monetaryTPEnabled?: boolean;
+  monetaryTpValue?: number | null;
+  monetaryTpClosePct?: number;
   entryTiming: "next_open" | "same_close" | "intrabar";
   exitTiming?: "next_open" | "same_close" | "intrabar";
   dailyDDLimitPct: number | null;

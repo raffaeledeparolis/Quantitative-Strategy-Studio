@@ -133,6 +133,7 @@ export function validateRules(rules: any, availableColumns: string[]): { valid: 
     "atr_mult",
     "none",
     "fixed_points",
+    "monetary",
     "prev_candle_low",
     "prev_candle_high",
     "prev_candle_extreme",
@@ -144,6 +145,7 @@ export function validateRules(rules: any, availableColumns: string[]): { valid: 
   if (sl.type === "atr_mult" && rules.atr_column) used.add(rules.atr_column);
   if (sl.type === "atr_mult" && !(sl.mult > 0)) errors.push("stop_loss.mult deve essere > 0.");
   if (sl.type === "fixed_points" && !(sl.value > 0)) errors.push("stop_loss.value deve essere > 0.");
+  if (sl.type === "monetary" && !(sl.value > 0)) errors.push("stop_loss.value deve essere > 0 (valore monetario in $ o €).");
   const CANDLE_SL_TYPES = [
     "prev_candle_low",
     "prev_candle_high",
@@ -161,9 +163,11 @@ export function validateRules(rules: any, availableColumns: string[]): { valid: 
   tps.forEach((tp: any, i: number) => {
     const hasRMult = tp.r_mult != null;
     const hasMult = tp.mult != null;
-    if (!hasRMult && !hasMult) errors.push(`take_profits[${i}]: specificare 'r_mult' (multiplo del rischio) oppure 'mult' (multiplo ATR).`);
+    const hasMonetary = tp.monetary != null;
+    if (!hasRMult && !hasMult && !hasMonetary) errors.push(`take_profits[${i}]: specificare 'r_mult' (multiplo del rischio), 'mult' (multiplo ATR) oppure 'monetary' (valore monetario).`);
     if (hasRMult && !(tp.r_mult > 0)) errors.push(`take_profits[${i}].r_mult deve essere > 0.`);
     if (hasMult && !(tp.mult > 0)) errors.push(`take_profits[${i}].mult deve essere > 0.`);
+    if (hasMonetary && !(tp.monetary > 0)) errors.push(`take_profits[${i}].monetary deve essere > 0.`);
     if (!(tp.close_pct > 0)) errors.push(`take_profits[${i}].close_pct deve essere > 0.`);
     pctSum += tp.close_pct || 0;
     if (hasRMult && sl.type === "none") errors.push(`take_profits[${i}]: r_mult richiede uno stop loss definito (non 'none').`);

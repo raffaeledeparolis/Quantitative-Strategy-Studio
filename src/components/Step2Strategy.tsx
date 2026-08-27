@@ -427,6 +427,7 @@ export function Step2Strategy({
                   if (!sl || sl.type === "none") return "nessuno";
                   if (sl.type === "atr_mult") return `${sl.mult}× ATR (${rulesParsed.atr_column || "non specificato"})`;
                   if (sl.type === "fixed_points") return `${sl.value} punti fissi`;
+                  if (sl.type === "monetary") return `$${sl.value} (monetario max)`;
                   if (sl.type === "prev_candle_low") return `min candela segnale${sl.offset ? ` − ${sl.offset} pt` : ""} (solo long)`;
                   if (sl.type === "prev_candle_high") return `max candela segnale${sl.offset ? ` + ${sl.offset} pt` : ""} (solo short)`;
                   if (sl.type === "prev_candle_extreme") return `min/max candela segnale${sl.offset ? ` ± ${sl.offset} pt` : ""} (adattivo long/short)`;
@@ -438,7 +439,7 @@ export function Step2Strategy({
                 {" · "}TP:{" "}
                 {(rulesParsed.take_profits || [])
                   .map((tp) => {
-                    const dist = tp.r_mult != null ? `${tp.r_mult}R` : `${tp.mult}×ATR`;
+                    const dist = tp.monetary != null ? `$${tp.monetary}` : tp.r_mult != null ? `${tp.r_mult}R` : `${tp.mult}×ATR`;
                     return `${dist}→${tp.close_pct}%`;
                   })
                   .join(", ") || "nessuno"}

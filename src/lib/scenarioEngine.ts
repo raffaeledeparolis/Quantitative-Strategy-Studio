@@ -179,6 +179,28 @@ export function scanTweakableParams(rules: StrategyRules, avgDailyDrawdownPct?: 
       suggestMin: parseFloat((sl.mult * 0.3).toFixed(3)),
       suggestMax: parseFloat((sl.mult * 2.5).toFixed(3)),
     });
+  } else if (sl.type === "fixed_points" && sl.value && sl.value > 0) {
+    params.push({
+      id: "stop_loss|value",
+      label: `SL — punti fissi (base: ${sl.value} pt)`,
+      group: "Moltiplicatori ATR / R",
+      pathParts: ["stop_loss", "value"],
+      currentValue: sl.value,
+      kind: "offset",
+      suggestMin: Math.max(1, Math.round(sl.value * 0.3)),
+      suggestMax: Math.round(sl.value * 2.5),
+    });
+  } else if (sl.type === "monetary" && sl.value && sl.value > 0) {
+    params.push({
+      id: "stop_loss|value",
+      label: `SL — valore monetario (base: $${sl.value})`,
+      group: "Moltiplicatori ATR / R",
+      pathParts: ["stop_loss", "value"],
+      currentValue: sl.value,
+      kind: "offset",
+      suggestMin: Math.max(10, Math.round(sl.value * 0.3)),
+      suggestMax: Math.round(sl.value * 2.5),
+    });
   }
 
   const CANDLE_SL_TYPES_FOR_SWEEP = [
@@ -202,7 +224,18 @@ export function scanTweakableParams(rules: StrategyRules, avgDailyDrawdownPct?: 
   }
 
   (rules.take_profits || []).forEach((tp: any, i: number) => {
-    if (tp.r_mult != null && tp.r_mult > 0) {
+    if (tp.monetary != null && tp.monetary > 0) {
+      params.push({
+        id: `take_profits|${i}|monetary`,
+        label: `TP${i + 1} — target monetario (base: $${tp.monetary})`,
+        group: "Moltiplicatori ATR / R",
+        pathParts: ["take_profits", String(i), "monetary"],
+        currentValue: tp.monetary,
+        kind: "offset",
+        suggestMin: Math.max(10, Math.round(tp.monetary * 0.3)),
+        suggestMax: Math.round(tp.monetary * 2.5),
+      });
+    } else if (tp.r_mult != null && tp.r_mult > 0) {
       params.push({
         id: `take_profits|${i}|r_mult`,
         label: `TP${i + 1} — multiplo R (base: ${tp.r_mult}R)`,
