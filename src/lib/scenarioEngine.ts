@@ -117,8 +117,23 @@ export const OPTIM_OBJECTIVES: {
   },
 ];
 
-export function scanTweakableParams(rules: StrategyRules, avgDailyDrawdownPct?: number | null): TweakableParam[] {
+export function scanTweakableParams(
+  rules: StrategyRules,
+  mmOrAvgDailyDrawdownPct?: MoneyManagement | number | null
+): TweakableParam[] {
   const params: TweakableParam[] = [];
+
+  const mm: MoneyManagement | null =
+    typeof mmOrAvgDailyDrawdownPct === "object" && mmOrAvgDailyDrawdownPct !== null
+      ? (mmOrAvgDailyDrawdownPct as MoneyManagement)
+      : null;
+
+  const avgDailyDrawdownPct: number | null =
+    typeof mmOrAvgDailyDrawdownPct === "number"
+      ? mmOrAvgDailyDrawdownPct
+      : mm?.dailyDDLimitPct != null
+      ? mm.dailyDDLimitPct
+      : null;
 
   function walkNode(node: any, pathParts: string[], groupLabel: string) {
     if (!node) return;
@@ -313,6 +328,54 @@ export function scanTweakableParams(rules: StrategyRules, avgDailyDrawdownPct?: 
       suggestMin: parseFloat(Math.max(0.001, baseMagnitude * 0.3).toFixed(4)),
       suggestMax: parseFloat(Math.min(0.5, baseMagnitude * 3).toFixed(4)),
     });
+  }
+
+  // Se presenti nel Money Management globale, esporta anche i parametri monetari per lo sweep
+  if (mm) {
+    if (mm.monetarySLEnabled && mm.monetarySLValue && mm.monetarySLValue > 0) {
+      params.push({
+        id: "mm|monetarySLValue",
+        label: `MM: Stop Loss Monetario (base: $${mm.monetarySLValue})`,
+        group: "Gestione Monetaria (MM)",
+        target: "mm",
+        pathParts: ["monetarySLValue"],
+        currentValue: mm.monetarySLValue,
+        kind: "offset",
+        unit: "$",
+        suggestMin: Math.max(10, Math.round(mm.monetarySLValue * 0.3)),
+        suggestMax: Math.round(mm.monetarySLValue * 2.5),
+      });
+    }
+
+    if (mm.monetaryTPEnabled && mm.monetaryTpValue && mm.monetaryTpValue > 0) {
+      params.push({
+        id: "mm|monetaryTpValue",
+        label: `MM: Take Profit Monetario (base: $${mm.monetaryTpValue})`,
+        group: "Gestione Monetaria (MM)",
+        target: "mm",
+        pathParts: ["monetaryTpValue"],
+        currentValue: mm.monetaryTpValue,
+        kind: "offset",
+        unit: "$",
+        suggestMin: Math.max(10, Math.round(mm.monetaryTpValue * 0.3)),
+        suggestMax: Math.round(mm.monetaryTpValue * 2.5),
+      });
+
+      if (mm.monetaryTpClosePct != null && mm.monetaryTpClosePct > 0) {
+        params.push({
+          id: "mm|monetaryTpClosePct",
+          label: `MM: TP Chiusura Parziale (base: ${mm.monetaryTpClosePct}%)`,
+          group: "Gestione Monetaria (MM)",
+          target: "mm",
+          pathParts: ["monetaryTpClosePct"],
+          currentValue: mm.monetaryTpClosePct,
+          kind: "close_pct",
+          unit: "%",
+          suggestMin: 10,
+          suggestMax: 100,
+        });
+      }
+    }
   }
 
   return params;
