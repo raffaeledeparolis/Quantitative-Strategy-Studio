@@ -376,6 +376,36 @@ export function scanTweakableParams(
         });
       }
     }
+
+    if (mm.sizingMode === "fixed" && mm.fixedQty > 0) {
+      params.push({
+        id: "mm|fixedQty",
+        label: `MM: Quantità Fissa Base (base: ${mm.fixedQty} lotti)`,
+        group: "Gestione Monetaria (MM)",
+        target: "mm",
+        pathParts: ["fixedQty"],
+        currentValue: mm.fixedQty,
+        kind: "offset",
+        unit: "qty",
+        suggestMin: Math.max(0.1, parseFloat((mm.fixedQty * 0.5).toFixed(2))),
+        suggestMax: parseFloat((mm.fixedQty * 3).toFixed(2)),
+      });
+
+      if (mm.linearGrowthEnabled && mm.linearGrowthMode === "step" && mm.linearGrowthStepCapital && mm.linearGrowthStepCapital > 0) {
+        params.push({
+          id: "mm|linearGrowthStepCapital",
+          label: `MM: Step Crescita Equity (base: $${mm.linearGrowthStepCapital})`,
+          group: "Gestione Monetaria (MM)",
+          target: "mm",
+          pathParts: ["linearGrowthStepCapital"],
+          currentValue: mm.linearGrowthStepCapital,
+          kind: "offset",
+          unit: "$",
+          suggestMin: Math.max(1000, Math.round(mm.linearGrowthStepCapital * 0.4)),
+          suggestMax: Math.round(mm.linearGrowthStepCapital * 2.5),
+        });
+      }
+    }
   }
 
   return params;

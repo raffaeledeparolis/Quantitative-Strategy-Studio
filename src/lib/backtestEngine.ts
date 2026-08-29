@@ -138,6 +138,56 @@ export function walkBarTouches(
   return order;
 }
 
+export function computeFixedPositionQty(mm: MoneyManagement, currentEquity: number): number {
+  const baseQty = mm.fixedQty > 0 ? mm.fixedQty : 1;
+  if (!mm.linearGrowthEnabled) {
+    return baseQty;
+  }
+
+  const initialCap = mm.initialCapital > 0 ? mm.initialCapital : 100000;
+  let qty: number;
+
+  if (mm.linearGrowthMode === "step") {
+    const stepCapital = mm.linearGrowthStepCapital && mm.linearGrowthStepCapital > 0 ? mm.linearGrowthStepCapital : 10000;
+    const stepQty = mm.linearGrowthStepQty && mm.linearGrowthStepQty > 0 ? mm.linearGrowthStepQty : baseQty;
+    const deltaEquity = currentEquity - initialCap;
+
+    let steps: number;
+    if (mm.linearGrowthAllowDeleveraging) {
+      steps = Math.floor(deltaEquity / stepCapital);
+    } else {
+      steps = Math.max(0, Math.floor(deltaEquity / stepCapital));
+    }
+    qty = baseQty + steps * stepQty;
+  } else {
+    // Proporzionale all'equity (default): baseQty * (Equity / Capitale Iniziale)
+    let ratio = initialCap > 0 ? currentEquity / initialCap : 1;
+    if (!mm.linearGrowthAllowDeleveraging) {
+      ratio = Math.max(1, ratio);
+    } else {
+      ratio = Math.max(0, ratio);
+    }
+    qty = baseQty * ratio;
+  }
+
+  if (mm.linearGrowthRounding === "integer") {
+    qty = Math.round(qty);
+  } else if (mm.linearGrowthRounding === "decimal") {
+    qty = Math.round(qty * 100) / 100;
+  }
+
+  const minQty = mm.linearGrowthMinQty != null && mm.linearGrowthMinQty > 0
+    ? mm.linearGrowthMinQty
+    : (mm.linearGrowthRounding === "integer" ? 1 : 0.01);
+  qty = Math.max(minQty, qty);
+
+  if (mm.linearGrowthMaxQty != null && mm.linearGrowthMaxQty > 0) {
+    qty = Math.min(mm.linearGrowthMaxQty, qty);
+  }
+
+  return qty;
+}
+
 export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManagement): {
   trades: Trade[];
   equityCurve: EquityPoint[];
@@ -219,7 +269,12 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     } else if (sl.type === "fixed_points" && sl.value && sl.value > 0) {
       slDist = sl.value;
     } else if (sl.type === "monetary" && sl.value && sl.value > 0) {
-      const refQty = mm.sizingMode === "fixed" ? (mm.fixedQty || 1) : 1;
+      const baseFixedQty = mm.fixedQty > 0 ? mm.fixedQty : 1;
+      const refQty = mm.sizingMode === "fixed"
+        ? (mm.linearGrowthEnabled && !mm.linearGrowthScaleMonetarySLTP
+            ? computeFixedPositionQty(mm, equity)
+            : baseFixedQty)
+        : 1;
       slDist = sl.value / (refQty * pointVal);
     } else if (sl.type === "prev_candle_low" || sl.type === "prev_candle_high" || sl.type === "prev_candle_extreme") {
       const offset = sl.offset || 0;
@@ -248,7 +303,12 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     }
 
     if (mm.monetarySLEnabled && mm.monetarySLValue && mm.monetarySLValue > 0) {
-      const refQty = mm.sizingMode === "fixed" ? (mm.fixedQty || 1) : 1;
+      const baseFixedQty = mm.fixedQty > 0 ? mm.fixedQty : 1;
+      const refQty = mm.sizingMode === "fixed"
+        ? (mm.linearGrowthEnabled && !mm.linearGrowthScaleMonetarySLTP
+            ? computeFixedPositionQty(mm, equity)
+            : baseFixedQty)
+        : 1;
       const mmSlDist = mm.monetarySLValue / (refQty * pointVal);
       if (slDist == null || mmSlDist < slDist) {
         slDist = mmSlDist;
@@ -281,7 +341,9 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       initialSlLevel = direction === "long" ? entryPrice - slDist : entryPrice + slDist;
     }
 
-    const qtyTotal = mm.sizingMode === "risk" && slDist ? (equity * (mm.riskPct / 100)) / (slDist * pointVal) : mm.fixedQty;
+    const qtyTotal = mm.sizingMode === "risk" && slDist
+      ? (equity * (mm.riskPct / 100)) / (slDist * pointVal)
+      : computeFixedPositionQty(mm, equity);
     let qtyRemaining = qtyTotal;
 
     interface TpItem {
@@ -294,7 +356,13 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     const tpLegs: TpItem[] = (rules.take_profits || []).map((tp, idx) => {
       let dist = 0;
       if (tp.monetary != null && tp.monetary > 0) {
-        dist = tp.monetary / (qtyTotal * pointVal);
+        const baseFixedQty = mm.fixedQty > 0 ? mm.fixedQty : 1;
+        const refQty = mm.sizingMode === "fixed"
+          ? (mm.linearGrowthEnabled && !mm.linearGrowthScaleMonetarySLTP
+              ? qtyTotal
+              : baseFixedQty)
+          : 1;
+        dist = tp.monetary / (refQty * pointVal);
       } else if (tp.r_mult != null && slDist != null) {
         dist = tp.r_mult * slDist;
       } else if (tp.mult != null && atr != null) {
@@ -305,7 +373,13 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     });
 
     if (mm.monetaryTPEnabled && mm.monetaryTpValue && mm.monetaryTpValue > 0) {
-      const mDist = mm.monetaryTpValue / (qtyTotal * pointVal);
+      const baseFixedQty = mm.fixedQty > 0 ? mm.fixedQty : 1;
+      const refQty = mm.sizingMode === "fixed"
+        ? (mm.linearGrowthEnabled && !mm.linearGrowthScaleMonetarySLTP
+            ? qtyTotal
+            : baseFixedQty)
+        : 1;
+      const mDist = mm.monetaryTpValue / (refQty * pointVal);
       const mLevel = direction === "long" ? entryPrice + mDist : entryPrice - mDist;
       const mClosePct = mm.monetaryTpClosePct && mm.monetaryTpClosePct > 0 ? Math.min(100, mm.monetaryTpClosePct) : 50;
       const mLabel = mClosePct < 100 ? `TP_Monetario_${mClosePct}%` : "TP_Monetario";

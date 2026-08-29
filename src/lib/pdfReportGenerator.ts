@@ -416,8 +416,13 @@ export async function exportBacktestPdfReport({
   doc.setTextColor(115, 107, 99);
   const firstDt = trades[0]?.entryDt ? fmtDT(trades[0].entryDt) : "Inizio";
   const lastDt = trades[trades.length - 1]?.exitDt ? fmtDT(trades[trades.length - 1].exitDt!) : "Fine";
+  const sizingStr = mm.sizingMode === "risk"
+    ? `${mm.riskPct}% Rischio`
+    : mm.linearGrowthEnabled
+    ? `${mm.fixedQty} Qty Base (Crescita Lineare Equity)`
+    : `${mm.fixedQty} Qty Fissa`;
   doc.text(
-    `Capitale Iniziale: ${fmtMoney(mm.initialCapital)} | Operazioni: ${trades.length} | Periodo: ${firstDt} → ${lastDt} | Sizing: ${mm.sizingMode === "risk" ? `${mm.riskPct}% Rischio` : `${mm.fixedQty} Qty Fissa`}`,
+    `Capitale Iniziale: ${fmtMoney(mm.initialCapital)} | Operazioni: ${trades.length} | Periodo: ${firstDt} → ${lastDt} | Sizing: ${sizingStr}`,
     margin,
     y
   );
@@ -1021,8 +1026,13 @@ export async function exportWalkForwardFullSummaryPdfReport({
   doc.setTextColor(115, 107, 99);
   const firstDt = baseTrades[0]?.entryDt ? fmtDT(baseTrades[0].entryDt) : "Inizio";
   const lastDt = baseTrades[baseTrades.length - 1]?.exitDt ? fmtDT(baseTrades[baseTrades.length - 1].exitDt!) : "Fine";
+  const wfSizingStr = mm.sizingMode === "risk"
+    ? `${mm.riskPct}% Rischio`
+    : mm.linearGrowthEnabled
+    ? `${mm.fixedQty} Qty Base (Crescita Lineare Equity)`
+    : `${mm.fixedQty} Qty Fissa`;
   doc.text(
-    `Capitale: ${fmtMoney(mm.initialCapital)} | Periodo: ${firstDt} → ${lastDt} | Campione Base: ${baseTrades.length} trade | Sizing: ${mm.sizingMode === "risk" ? `${mm.riskPct}% Rischio` : `${mm.fixedQty} Qty Fissa`}`,
+    `Capitale: ${fmtMoney(mm.initialCapital)} | Periodo: ${firstDt} → ${lastDt} | Campione Base: ${baseTrades.length} trade | Sizing: ${wfSizingStr}`,
     margin,
     y
   );

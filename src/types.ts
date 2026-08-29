@@ -90,6 +90,15 @@ export interface MoneyManagement {
   sizingMode: "risk" | "fixed";
   riskPct: number;
   fixedQty: number;
+  linearGrowthEnabled?: boolean;
+  linearGrowthMode?: "proportional" | "step";
+  linearGrowthStepCapital?: number;
+  linearGrowthStepQty?: number;
+  linearGrowthRounding?: "integer" | "decimal" | "none";
+  linearGrowthMinQty?: number;
+  linearGrowthMaxQty?: number | null;
+  linearGrowthAllowDeleveraging?: boolean;
+  linearGrowthScaleMonetarySLTP?: boolean;
   spread: number;
   pointValue?: number;
   monetarySLEnabled?: boolean;
