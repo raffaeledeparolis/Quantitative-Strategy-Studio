@@ -167,6 +167,12 @@ export interface Trade {
   equityAfter: number;
   afterTp1SlMode: string;
   legs: TradeLeg[];
+  mfePoints?: number;
+  mfePct?: number;
+  mfeUsd?: number;
+  maePoints?: number;
+  maePct?: number;
+  maeUsd?: number;
 }
 
 export interface EquityPoint {
@@ -217,6 +223,11 @@ export interface BacktestMetrics {
     longN: number;
     shortN: number;
   }[];
+  avgMfeUsd?: number;
+  avgMfePct?: number;
+  avgMaeUsd?: number;
+  avgMaePct?: number;
+  mfeMaeRatio?: number;
 }
 
 export interface BacktestResult {

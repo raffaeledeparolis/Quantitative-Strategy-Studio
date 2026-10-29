@@ -126,6 +126,21 @@ export function priceAndRemainingSegments(o: number, h: number, l: number, c: nu
   return { price: c, remaining: [[c, c]] };
 }
 
+export interface TouchEvent {
+  name: string;
+  level: number;
+  legIdx?: number;
+  gapFill?: boolean;
+  traversedHighAtTouch?: number;
+  traversedLowAtTouch?: number;
+}
+
+export interface WalkBarTouchesResult {
+  order: TouchEvent[];
+  traversedHigh: number;
+  traversedLow: number;
+}
+
 export function walkBarTouches(
   prevClose: number | null,
   o: number,
@@ -134,34 +149,67 @@ export function walkBarTouches(
   c: number,
   activeLevels: { name: string; level: number; legIdx?: number }[],
   presetSegments?: [number, number][]
-): { name: string; level: number; legIdx?: number; gapFill?: boolean }[] {
-  const order: { name: string; level: number; legIdx?: number; gapFill?: boolean }[] = [];
+): WalkBarTouchesResult {
+  const order: TouchEvent[] = [];
   let remaining = activeLevels.slice();
+  let travHigh = o;
+  let travLow = o;
 
   if (!presetSegments && prevClose != null && prevClose !== o && remaining.length > 0) {
     const glo = Math.min(prevClose, o), ghi = Math.max(prevClose, o);
     const inGap = remaining.filter((a) => a.level >= glo && a.level <= ghi);
     inGap.sort((a, b) => Math.abs(a.level - prevClose) - Math.abs(b.level - prevClose));
     for (const t of inGap) {
-      order.push({ ...t, gapFill: true });
+      travHigh = Math.max(travHigh, t.level);
+      travLow = Math.min(travLow, t.level);
+      order.push({ ...t, gapFill: true, traversedHighAtTouch: travHigh, traversedLowAtTouch: travLow });
       remaining = remaining.filter((r) => r !== t);
-      if (t.name === "SL") return order;
+      if (t.name === "SL") return { order, traversedHigh: travHigh, traversedLow: travLow };
     }
+    travHigh = Math.max(travHigh, ghi);
+    travLow = Math.min(travLow, glo);
   }
 
   const segments = presetSegments || pathSegments(o, h, l, c);
   for (const [segStart, segEnd] of segments) {
-    if (remaining.length === 0) break;
+    travHigh = Math.max(travHigh, segStart);
+    travLow = Math.min(travLow, segStart);
+
+    if (remaining.length === 0) {
+      travHigh = Math.max(travHigh, segEnd);
+      travLow = Math.min(travLow, segEnd);
+      continue;
+    }
+
     const lo = Math.min(segStart, segEnd), hi = Math.max(segStart, segEnd);
     const inSeg = remaining.filter((a) => a.level >= lo && a.level <= hi);
     inSeg.sort((a, b) => Math.abs(a.level - segStart) - Math.abs(b.level - segStart));
-    for (const t of inSeg) {
-      order.push(t);
-      remaining = remaining.filter((r) => r !== t);
-      if (t.name === "SL") return order;
+
+    if (inSeg.length === 0) {
+      travHigh = Math.max(travHigh, segEnd);
+      travLow = Math.min(travLow, segEnd);
+    } else {
+      let curP = segStart;
+      let slHit = false;
+      for (const t of inSeg) {
+        travHigh = Math.max(travHigh, curP, t.level);
+        travLow = Math.min(travLow, curP, t.level);
+        curP = t.level;
+        order.push({ ...t, traversedHighAtTouch: travHigh, traversedLowAtTouch: travLow });
+        remaining = remaining.filter((r) => r !== t);
+        if (t.name === "SL") {
+          slHit = true;
+          break;
+        }
+      }
+      if (slHit) {
+        return { order, traversedHigh: travHigh, traversedLow: travLow };
+      }
+      travHigh = Math.max(travHigh, curP, segEnd);
+      travLow = Math.min(travLow, curP, segEnd);
     }
   }
-  return order;
+  return { order, traversedHigh: travHigh, traversedLow: travLow };
 }
 
 export function computeFixedPositionQty(mm: MoneyManagement, currentEquity: number): number {
@@ -438,6 +486,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       currentSlLevel = direction === "long" ? entryPrice - trailDist : entryPrice + trailDist;
     }
     let trailBestPrice = entryPrice;
+    let maxPriceWhileInTrade = entryPrice;
+    let minPriceWhileInTrade = entryPrice;
     const signalExitRules = normalizeExitRules(direction === "long" ? rules.exit_long : rules.exit_short).map((r, idx) => ({
       condition: r.condition,
       closePct: r.close_pct,
@@ -455,6 +505,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       if (fridayCloseActive && isFridayCloseWindow(cb.dt, fridayCloseCutoffMin) && qtyRemaining > 1e-9) {
         const exitPx = j === entryIdx ? entryPriceRaw : cb.open;
         const fill = direction === "long" ? exitPx - half : exitPx + half;
+        maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+        minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
         const legPnl = qtyRemaining * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
         pnlTrade += legPnl;
         legs.push({ reason: "FridayClose", dt: cb.dt, price: fill, qty: qtyRemaining, pctOfPosition: (qtyRemaining / qtyTotal) * 100, pnl: legPnl });
@@ -468,6 +520,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       if (!isEntryBarSameClose && pendingSignalExits.length > 0 && qtyRemaining > 1e-9) {
         const exitPx = j === entryIdx ? entryPriceRaw : cb.open;
         const fill = direction === "long" ? exitPx - half : exitPx + half;
+        maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+        minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
         for (const pending of pendingSignalExits) {
           if (qtyRemaining <= 1e-9) break;
           const q = pending.closePct >= 100 ? qtyRemaining : Math.min(qtyTotal * (pending.closePct / 100), qtyRemaining);
@@ -506,7 +560,7 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
         if (currentSlLevel != null) active.push({ name: "SL", level: currentSlLevel });
         tpLegs.forEach((leg, idx) => { if (!leg.hit) active.push({ name: leg.label, level: leg.level, legIdx: idx }); });
 
-        const touched = walkBarTouches(
+        const { order: touched, traversedHigh: barTravHigh, traversedLow: barTravLow } = walkBarTouches(
           prevClose, barOpen, cb.high, cb.low, cb.close, active,
           j === entryIdx && entryRemainingSegments ? entryRemainingSegments : (cb.intrabarSegments || undefined)
         );
@@ -516,6 +570,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
           if (t.name === "SL") {
             const px = t.gapFill ? barOpen : t.level;
             const fill = direction === "long" ? px - half : px + half;
+            maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, t.traversedHighAtTouch ?? fill);
+            minPriceWhileInTrade = Math.min(minPriceWhileInTrade, t.traversedLowAtTouch ?? fill);
             const qtyAtSL = qtyRemaining;
             const legPnl = qtyAtSL * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
             pnlTrade += legPnl;
@@ -555,11 +611,17 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
                 currentSlLevel = direction === "long" ? trailBestPrice - trailDist : trailBestPrice + trailDist;
               }
             }
-            if (qtyRemaining <= 1e-9) { exitReason = lastTpHitLabel; exitDt = cb.dt; closed = true; break; }
+            if (qtyRemaining <= 1e-9) {
+              maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, t.traversedHighAtTouch ?? fill);
+              minPriceWhileInTrade = Math.min(minPriceWhileInTrade, t.traversedLowAtTouch ?? fill);
+              exitReason = lastTpHitLabel; exitDt = cb.dt; closed = true; break;
+            }
           }
         }
 
         if (!closed) {
+          maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, barTravHigh);
+          minPriceWhileInTrade = Math.min(minPriceWhileInTrade, barTravLow);
           const barBest = direction === "long" ? cb.high : cb.low;
           const unhitTpLevels = tpLegs.filter((l) => !l.hit).map((l) => l.level);
           const tpCeiling =
@@ -608,6 +670,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
                   ? cb.close
                   : intrabarFixedFractionExit(cb.open, cb.high, cb.low, cb.close, direction === "long", exitFrac);
               const fill = direction === "long" ? exitPxRaw - half : exitPxRaw + half;
+              maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+              minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
               const q = sig.closePct >= 100 ? qtyRemaining : Math.min(qtyTotal * (sig.closePct / 100), qtyRemaining);
               if (q > 1e-9) {
                 const legPnl = q * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
@@ -650,6 +714,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     if (!closed) {
       const lastBar = bars[Math.min(j, N - 1)];
       const fill = direction === "long" ? lastBar.close - half : lastBar.close + half;
+      maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+      minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
       const qtyAtTimeout = qtyRemaining;
       const legPnl = qtyAtTimeout * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
       pnlTrade += legPnl;
@@ -664,6 +730,18 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       exitDt = lastBar.dt;
       j = Math.min(j, N - 1);
     }
+
+    const mfePoints = direction === "long"
+      ? Math.max(0, maxPriceWhileInTrade - entryPrice)
+      : Math.max(0, entryPrice - minPriceWhileInTrade);
+    const mfePct = entryPrice > 0 ? (mfePoints / entryPrice) * 100 : 0;
+    const mfeUsd = mfePoints * qtyTotal * pointVal;
+
+    const maePoints = direction === "long"
+      ? Math.max(0, entryPrice - minPriceWhileInTrade)
+      : Math.max(0, maxPriceWhileInTrade - entryPrice);
+    const maePct = entryPrice > 0 ? (maePoints / entryPrice) * 100 : 0;
+    const maeUsd = -(maePoints * qtyTotal * pointVal);
 
     equity += pnlTrade;
     trades.push({
@@ -682,6 +760,12 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
       equityAfter: equity,
       afterTp1SlMode: typeof atpConfig === "string" ? atpConfig : atpConfig.type,
       legs,
+      mfePoints,
+      mfePct,
+      mfeUsd,
+      maePoints,
+      maePct,
+      maeUsd,
     });
     i = j + 1;
   }
@@ -835,6 +919,12 @@ export function computeMetrics(trades: Trade[], equityCurve: EquityPoint[], init
     };
   });
 
+  const avgMfeUsd = trades.length ? trades.reduce((s, t) => s + (t.mfeUsd ?? 0), 0) / n : 0;
+  const avgMfePct = trades.length ? trades.reduce((s, t) => s + (t.mfePct ?? 0), 0) / n : 0;
+  const avgMaeUsd = trades.length ? trades.reduce((s, t) => s + (t.maeUsd ?? 0), 0) / n : 0;
+  const avgMaePct = trades.length ? trades.reduce((s, t) => s + (t.maePct ?? 0), 0) / n : 0;
+  const mfeMaeRatio = Math.abs(avgMaeUsd) > 1e-6 ? avgMfeUsd / Math.abs(avgMaeUsd) : avgMfeUsd > 0 ? 999 : 0;
+
   return {
     n,
     winRate: wins.length / n,
@@ -860,6 +950,11 @@ export function computeMetrics(trades: Trade[], equityCurve: EquityPoint[], init
     monthly,
     weekly,
     monthlyByDirection,
+    avgMfeUsd,
+    avgMfePct,
+    avgMaeUsd,
+    avgMaePct,
+    mfeMaeRatio,
   };
 }
 
@@ -905,7 +1000,27 @@ export function formatLegsForExport(legs: TradeLeg[]): string {
 }
 
 export function tradesToCSV(trades: Trade[]): string {
-  const header = ["#", "Direzione", "Entry Datetime", "Entry Price", "Exit Datetime", "Exit Price", "Motivo Uscita", "ATR Entry", "SL", "Qty", "Candele", "TP Hit", "PnL", "Equity Dopo", "Gambe (motivo:%size@prezzo(pnl))"];
+  const header = [
+    "#",
+    "Direzione",
+    "Entry Datetime",
+    "Entry Price",
+    "Exit Datetime",
+    "Exit Price",
+    "Motivo Uscita",
+    "ATR Entry",
+    "SL",
+    "Qty",
+    "Candele",
+    "TP Hit",
+    "PnL",
+    "Equity Dopo",
+    "MFE ($)",
+    "MFE (%)",
+    "MAE ($)",
+    "MAE (%)",
+    "Gambe (motivo:%size@prezzo(pnl))",
+  ];
   const rows = trades.map((t, idx) => [
     idx + 1,
     t.direction,
@@ -921,6 +1036,10 @@ export function tradesToCSV(trades: Trade[]): string {
     t.tp1Hit ? "SI" : "NO",
     t.pnl.toFixed(2),
     t.equityAfter.toFixed(2),
+    t.mfeUsd != null ? t.mfeUsd.toFixed(2) : "",
+    t.mfePct != null ? t.mfePct.toFixed(2) + "%" : "",
+    t.maeUsd != null ? t.maeUsd.toFixed(2) : "",
+    t.maePct != null ? t.maePct.toFixed(2) + "%" : "",
     formatLegsForExport(t.legs),
   ]);
   return [header, ...rows].map((r) => r.join(";")).join("\n");

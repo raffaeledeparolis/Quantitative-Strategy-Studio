@@ -75,6 +75,42 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
       .sort((a, b) => b.n - a.n);
   }, [metrics?.byLegReason]);
 
+  const excursionStats = useMemo(() => {
+    const wins = trades.filter((t) => t.pnl > 0);
+    const losses = trades.filter((t) => t.pnl <= 0);
+    const avg = (arr: typeof trades, fn: (t: (typeof trades)[0]) => number) =>
+      arr.length ? arr.reduce((s, t) => s + fn(t), 0) / arr.length : 0;
+    return [
+      {
+        group: "Trade Vincenti",
+        count: wins.length,
+        pnl: avg(wins, (t) => t.pnl),
+        mfeUsd: avg(wins, (t) => t.mfeUsd || 0),
+        mfePct: avg(wins, (t) => t.mfePct || 0),
+        maeUsd: Math.abs(avg(wins, (t) => t.maeUsd || 0)),
+        maePct: avg(wins, (t) => t.maePct || 0),
+      },
+      {
+        group: "Trade Perdenti",
+        count: losses.length,
+        pnl: avg(losses, (t) => t.pnl),
+        mfeUsd: avg(losses, (t) => t.mfeUsd || 0),
+        mfePct: avg(losses, (t) => t.mfePct || 0),
+        maeUsd: Math.abs(avg(losses, (t) => t.maeUsd || 0)),
+        maePct: avg(losses, (t) => t.maePct || 0),
+      },
+      {
+        group: "Tutti i Trade",
+        count: trades.length,
+        pnl: avg(trades, (t) => t.pnl),
+        mfeUsd: avg(trades, (t) => t.mfeUsd || 0),
+        mfePct: avg(trades, (t) => t.mfePct || 0),
+        maeUsd: Math.abs(avg(trades, (t) => t.maeUsd || 0)),
+        maePct: avg(trades, (t) => t.maePct || 0),
+      },
+    ];
+  }, [trades]);
+
   if (!metrics) {
     return (
       <Card id="report-empty-card">
@@ -368,6 +404,96 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
       </Card>
 
       <Card style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontFamily: FONT_SERIF, fontSize: 16, color: C.primaryDark, margin: 0 }}>
+              Analisi Escursioni Prezzo: MFE & MAE
+            </h3>
+            <p style={{ fontSize: 12, color: C.muted, margin: "4px 0 0" }}>
+              MFE (Maximum Favorable Excursion) misura il picco di profitto potenziale durante il trade; MAE (Maximum Adverse Excursion) misura la massima perdita/drawdown intrabar subita prima dell'uscita.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+          <KPI
+            id="kpi-avg-mfe"
+            label="MFE Medio"
+            value={metrics.avgMfeUsd != null ? `+${fmtMoney(metrics.avgMfeUsd)}` : "—"}
+            sub={metrics.avgMfePct != null ? `+${fmtNum(metrics.avgMfePct, 2)}% escursione` : undefined}
+          />
+          <KPI
+            id="kpi-avg-mae"
+            label="MAE Medio"
+            value={metrics.avgMaeUsd != null ? fmtMoney(metrics.avgMaeUsd) : "—"}
+            sub={metrics.avgMaePct != null ? `-${fmtNum(metrics.avgMaePct, 2)}% drawdown` : undefined}
+            negative
+          />
+          <KPI
+            id="kpi-mfe-mae-ratio"
+            label="Ratio MFE / MAE"
+            value={metrics.mfeMaeRatio != null ? fmtNum(metrics.mfeMaeRatio, 2) : "—"}
+            sub={metrics.mfeMaeRatio != null && metrics.mfeMaeRatio >= 1.5 ? "Asimmetria favorevole" : "Asimmetria moderata"}
+          />
+          <KPI
+            id="kpi-capture-eff"
+            label="Efficienza Cattura"
+            value={
+              metrics.avgMfeUsd && metrics.avgMfeUsd > 0 && metrics.expectancy > 0
+                ? fmtPct(metrics.expectancy / metrics.avgMfeUsd)
+                : "—"
+            }
+            sub="PnL netto medio / MFE potenziale"
+          />
+        </div>
+
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr>
+              {["Gruppo Trade", "# Trade", "MFE Medio ($ / %)", "MAE Medio ($ / %)", "PnL Realizzato Medio", "Efficienza Uscita"].map((h) => (
+                <th
+                  key={h}
+                  style={{
+                    textAlign: h === "Gruppo Trade" ? "left" : "right",
+                    padding: "6px 10px",
+                    borderBottom: `2px solid ${C.border}`,
+                    color: C.muted,
+                    fontSize: 11,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {excursionStats.map((row) => {
+              const eff = row.mfeUsd > 0 && row.pnl > 0 ? (row.pnl / row.mfeUsd) * 100 : null;
+              return (
+                <tr key={row.group} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "8px 10px", fontWeight: 600 }}>{row.group}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right" }}>{row.count}</td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", color: C.primaryDark, fontWeight: 600 }}>
+                    +{fmtMoney(row.mfeUsd)} <span style={{ fontSize: 10.5, color: C.muted }}>(+{fmtNum(row.mfePct, 2)}%)</span>
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", color: C.red, fontWeight: 600 }}>
+                    -{fmtMoney(row.maeUsd)} <span style={{ fontSize: 10.5, color: C.muted }}>(-{fmtNum(row.maePct, 2)}%)</span>
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", color: row.pnl >= 0 ? C.primaryDark : C.red, fontWeight: 600 }}>
+                    {fmtMoney(row.pnl)}
+                  </td>
+                  <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 600, color: eff != null ? C.primaryDark : C.muted }}>
+                    {eff != null ? `${fmtNum(eff, 1)}%` : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h3 style={{ fontFamily: FONT_SERIF, fontSize: 15, color: C.primaryDark, margin: 0 }}>Trade log</h3>
           <div style={{ fontSize: 12, color: C.muted }}>
@@ -378,7 +504,7 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, fontFamily: FONT_MONO }}>
             <thead>
               <tr>
-                {["#", "Dir", "Entry", "Prezzo Entry", "Exit", "Prezzo Exit", "Motivo", "Gambe", "Candele", "PnL", "Equity"].map((h) => (
+                {["#", "Dir", "Entry", "Prezzo Entry", "Exit", "Prezzo Exit", "Motivo", "Gambe", "MFE ($ / %)", "MAE ($ / %)", "Candele", "PnL", "Equity"].map((h) => (
                   <th key={h} style={{ textAlign: "left", padding: "6px 8px", borderBottom: `2px solid ${C.border}`, fontFamily: FONT_SANS, fontSize: 11, color: C.muted, textTransform: "uppercase" }}>{h}</th>
                 ))}
               </tr>
@@ -415,6 +541,12 @@ export function Step4Report({ result, mm, onBack, onReset, onMonteCarlo }: Step4
                         </span>
                       ))}
                     </div>
+                  </td>
+                  <td style={{ padding: "5px 8px", color: C.primaryDark, fontWeight: 600 }}>
+                    +{fmtMoney(t.mfeUsd ?? 0)} <span style={{ fontSize: 10, color: C.muted }}>(+{fmtNum(t.mfePct, 2)}%)</span>
+                  </td>
+                  <td style={{ padding: "5px 8px", color: C.red, fontWeight: 600 }}>
+                    {fmtMoney(t.maeUsd ?? 0)} <span style={{ fontSize: 10, color: C.muted }}>(-{fmtNum(t.maePct, 2)}%)</span>
                   </td>
                   <td style={{ padding: "5px 8px" }}>{t.barsHeld}</td>
                   <td style={{ padding: "5px 8px", color: t.pnl >= 0 ? C.primaryDark : C.red, fontWeight: 700 }}>{fmtMoney(t.pnl)}</td>
