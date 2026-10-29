@@ -59,13 +59,37 @@ export interface StrategyRules {
   notes?: string;
 }
 
+export type IntrabarInterpolationMethod = "linear" | "volumetric";
+
+export interface IntrabarInterpolationConfig {
+  enabled: boolean;
+  method: IntrabarInterpolationMethod;
+  hfFileId?: string | null;
+}
+
 export interface Bar {
   dt: number;
   open: number;
   high: number;
   low: number;
   close: number;
-  [key: string]: number | null;
+  volume?: number;
+  intrabarSegments?: [number, number][];
+  intrabarPointsCount?: number;
+  [key: string]: any;
+}
+
+export interface MergedDatasetResult {
+  bars: Bar[];
+  dropped: number;
+  columns: string[];
+  perFileDiag: { name: string; total: number; parsed: number; sampleRaw: string | null }[];
+  intrabarInterpolationApplied?: {
+    method: IntrabarInterpolationMethod;
+    hfFileName: string;
+    totalSubPoints: number;
+    avgPointsPerBar: number;
+  } | null;
 }
 
 export interface ColumnStat {

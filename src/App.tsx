@@ -13,7 +13,7 @@ import { Step7WalkForward } from "./components/Step7WalkForward";
 import {
   CsvParsedFile, Bar, ColumnStat, StrategyRules, MoneyManagement, BacktestResult,
   MonteCarloConfig, MonteCarloResult, SweepConfigItem, ScenarioResult, ScenarioOptResult,
-  WalkForwardConfig, WalkForwardResult,
+  WalkForwardConfig, WalkForwardResult, IntrabarInterpolationConfig, MergedDatasetResult,
 } from "./types";
 import { mergeCsvFiles, computeColumnStats, parseCsvFile } from "./lib/csvHelper";
 import { validateRules, buildDefaultTemplate, extractTweakableParams, parseStrategyHeuristically } from "./lib/ruleParser";
@@ -33,12 +33,12 @@ export default function App() {
   // Step 1: Files & Merged Data
   const [files, setFiles] = useState<CsvParsedFile[]>([]);
   const [priceFileId, setPriceFileId] = useState<string | null>(null);
-  const [merged, setMerged] = useState<{
-    bars: Bar[];
-    dropped: number;
-    columns: string[];
-    perFileDiag: any[];
-  } | null>(null);
+  const [intrabarConfig, setIntrabarConfig] = useState<IntrabarInterpolationConfig>({
+    enabled: false,
+    method: "linear",
+    hfFileId: null,
+  });
+  const [merged, setMerged] = useState<MergedDatasetResult | null>(null);
 
   const stats = useMemo<Record<string, ColumnStat>>(() => {
     if (!merged || !merged.bars.length) return {};
@@ -143,7 +143,7 @@ export default function App() {
   // Merge Handler
   const handleMerge = useCallback(() => {
     if (!files.length) return;
-    const res = mergeCsvFiles(files, priceFileId);
+    const res = mergeCsvFiles(files, priceFileId, intrabarConfig);
     setMerged(res);
 
     if (res.bars.length > 0) {
@@ -171,7 +171,7 @@ export default function App() {
       });
       setSweepConfigs(initialSweeps);
     }
-  }, [files, priceFileId, mm]);
+  }, [files, priceFileId, intrabarConfig, mm]);
 
   // AI Rule Generation
   const handleGenerateRules = async (customText?: string) => {
@@ -415,6 +415,7 @@ export default function App() {
     setMaxStep(1);
     setFiles([]);
     setPriceFileId(null);
+    setIntrabarConfig({ enabled: false, method: "linear", hfFileId: null });
     setMerged(null);
     setStrategyText("");
     setRulesJson("");
@@ -524,6 +525,8 @@ export default function App() {
             setFiles={setFiles}
             priceFileId={priceFileId}
             setPriceFileId={setPriceFileId}
+            intrabarConfig={intrabarConfig}
+            setIntrabarConfig={setIntrabarConfig}
             merged={merged}
             setMerged={setMerged}
             onMerge={handleMerge}

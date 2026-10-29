@@ -1,5 +1,6 @@
 import Papa from "papaparse";
-import { Bar, ColumnStat, CsvParsedFile } from "../types";
+import { Bar, ColumnStat, CsvParsedFile, IntrabarInterpolationConfig, MergedDatasetResult } from "../types";
+import { pathSegments } from "./backtestEngine";
 
 export function parseDateTime(raw: any): number | null {
   if (raw == null) return null;
@@ -114,14 +115,13 @@ export function parseCsvFile(text: string, name: string): CsvParsedFile {
   return { id: `${name}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name, header, rows, ncols, extraCols, nRows: rows.length, error: null };
 }
 
-export function mergeDatasets(files: CsvParsedFile[], priceFileId: string | null): {
-  bars: Bar[];
-  dropped: number;
-  columns: string[];
-  perFileDiag: { name: string; total: number; parsed: number; sampleRaw: string | null }[];
-} {
+export function mergeDatasets(
+  files: CsvParsedFile[],
+  priceFileId: string | null,
+  intrabarConfig?: IntrabarInterpolationConfig
+): MergedDatasetResult {
   const validFiles = files.filter((f) => !f.error);
-  if (validFiles.length === 0) return { bars: [], dropped: 0, columns: [], perFileDiag: [] };
+  if (validFiles.length === 0) return { bars: [], dropped: 0, columns: [], perFileDiag: [], intrabarInterpolationApplied: null };
 
   const perFileMaps = validFiles.map((f) => {
     const map = new Map<number, string[]>();
@@ -139,23 +139,50 @@ export function mergeDatasets(files: CsvParsedFile[], priceFileId: string | null
     sampleRaw: f.rows[0] ? f.rows[0][0] : null,
   }));
 
-  let common = new Set(perFileMaps[0].keys());
-  for (let i = 1; i < perFileMaps.length; i++) {
+  const priceFileIdx = Math.max(0, validFiles.findIndex((f) => f.id === priceFileId));
+
+  // Check if intrabar interpolation using higher-frequency data is requested
+  const isInterpolationActive = Boolean(intrabarConfig?.enabled);
+  let hfFileIdx = -1;
+
+  if (isInterpolationActive && validFiles.length >= 2) {
+    if (intrabarConfig?.hfFileId) {
+      hfFileIdx = validFiles.findIndex((f) => f.id === intrabarConfig.hfFileId);
+    }
+    // If not specified or points to priceFileIdx, find file that has significantly more rows or is not priceFile
+    if (hfFileIdx < 0 || hfFileIdx === priceFileIdx) {
+      let maxRows = -1;
+      validFiles.forEach((f, idx) => {
+        if (idx !== priceFileIdx && f.rows.length > maxRows) {
+          maxRows = f.rows.length;
+          hfFileIdx = idx;
+        }
+      });
+    }
+  }
+
+  // Base files to align for standard columns (all except the HF file if HF is used for intrabar)
+  const baseFilesIndices = isInterpolationActive && hfFileIdx >= 0
+    ? validFiles.map((_, idx) => idx).filter((idx) => idx !== hfFileIdx)
+    : validFiles.map((_, idx) => idx);
+
+  let common = new Set(perFileMaps[baseFilesIndices[0]].keys());
+  for (let i = 1; i < baseFilesIndices.length; i++) {
     const next = new Set<number>();
-    for (const ts of common) if (perFileMaps[i].has(ts)) next.add(ts);
+    const fi = baseFilesIndices[i];
+    for (const ts of common) if (perFileMaps[fi].has(ts)) next.add(ts);
     common = next;
   }
 
   const tsList = Array.from(common).sort((a, b) => a - b);
-  const priceFileIdx = Math.max(0, validFiles.findIndex((f) => f.id === priceFileId));
   const columns: string[] = ["open", "high", "low", "close"];
-  validFiles.forEach((f) =>
-    f.extraCols.forEach((c) => {
+  baseFilesIndices.forEach((fi) => {
+    validFiles[fi].extraCols.forEach((c) => {
       if (!columns.includes(c.name)) {
         columns.push(c.name);
       }
-    })
-  );
+    });
+  });
 
   const bars: Bar[] = [];
   let dropped = 0;
@@ -171,7 +198,7 @@ export function mergeDatasets(files: CsvParsedFile[], priceFileId: string | null
     if (![open, high, low, close].every(Number.isFinite)) { dropped++; continue; }
     let consistent = true;
     const bar: Bar = { dt: ts, open, high, low, close };
-    for (let fi = 0; fi < validFiles.length; fi++) {
+    for (const fi of baseFilesIndices) {
       const row = perFileMaps[fi].get(ts);
       if (!row) { consistent = false; break; }
       const o = parseFloat(row[1]), h = parseFloat(row[2]), l = parseFloat(row[3]), c = parseFloat(row[4]);
@@ -183,12 +210,166 @@ export function mergeDatasets(files: CsvParsedFile[], priceFileId: string | null
       }
     }
     if (!consistent) { dropped++; continue; }
-    // Check extra columns
     const extraColsToCheck = columns.filter((c) => !["open", "high", "low", "close"].includes(c));
     if (extraColsToCheck.some((cn) => bar[cn] == null)) { dropped++; continue; }
     bars.push(bar);
   }
-  return { bars, dropped, columns, perFileDiag };
+
+  // Now apply intrabar price interpolation if enabled
+  let intrabarInterpolationApplied: MergedDatasetResult["intrabarInterpolationApplied"] = null;
+
+  if (isInterpolationActive && bars.length > 0) {
+    const method = intrabarConfig?.method || "linear";
+    let totalSubPoints = 0;
+
+    if (hfFileIdx >= 0) {
+      const hfFile = validFiles[hfFileIdx];
+      // Check for volume column in HF file
+      const volIdx = hfFile.header.findIndex((h) =>
+        /^(vol|volume|tick_vol|tick_volume|qty|volume_traded|tot_vol)$/i.test(h)
+      );
+
+      // Parse and sort all valid sub-bars from HF file
+      interface SubBarItem {
+        dt: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }
+      const hfItems: SubBarItem[] = [];
+      for (const r of hfFile.rows) {
+        const ts = parseDateTime(r[0]);
+        if (ts == null) continue;
+        const o = parseFloat(r[1]), h = parseFloat(r[2]), l = parseFloat(r[3]), c = parseFloat(r[4]);
+        if (![o, h, l, c].every(Number.isFinite)) continue;
+        const rawVol = volIdx >= 0 ? parseFloat(r[volIdx]) : NaN;
+        const vol = Number.isFinite(rawVol) && rawVol > 0 ? rawVol : Math.max(1, (h - l) * 100);
+        hfItems.push({ dt: ts, open: o, high: h, low: l, close: c, volume: vol });
+      }
+      hfItems.sort((a, b) => a.dt - b.dt);
+
+      // Compute median delta of base bars
+      const deltas: number[] = [];
+      for (let i = 1; i < Math.min(bars.length, 100); i++) {
+        const d = bars[i].dt - bars[i - 1].dt;
+        if (d > 0) deltas.push(d);
+      }
+      deltas.sort((a, b) => a - b);
+      const medianDelta = deltas.length > 0 ? deltas[Math.floor(deltas.length / 2)] : 3600 * 1000;
+
+      // Group sub-bars into each base bar
+      let hfCursor = 0;
+      for (let bi = 0; bi < bars.length; bi++) {
+        const bar = bars[bi];
+        const barStart = bar.dt;
+        const barEnd = bi < bars.length - 1 ? bars[bi + 1].dt : barStart + medianDelta;
+
+        const subBars: SubBarItem[] = [];
+        while (hfCursor < hfItems.length && hfItems[hfCursor].dt < barStart) {
+          hfCursor++;
+        }
+        let tempCursor = hfCursor;
+        while (tempCursor < hfItems.length && hfItems[tempCursor].dt < barEnd) {
+          subBars.push(hfItems[tempCursor]);
+          tempCursor++;
+        }
+
+        if (subBars.length > 0) {
+          totalSubPoints += subBars.length;
+          bar.intrabarPointsCount = subBars.length;
+
+          if (method === "volumetric") {
+            // Volumetric interpolation: weight path by volume density and VWAP nodes
+            const totalVol = subBars.reduce((s, x) => s + x.volume, 0);
+            bar.volume = totalVol;
+            const avgVol = totalVol / subBars.length;
+
+            const points: number[] = [bar.open];
+            for (const sb of subBars) {
+              const vwap = (sb.open + sb.high + sb.low + 2 * sb.close) / 5;
+              if (sb.volume >= avgVol * 0.8) {
+                // High liquidity: include VWAP intermediate node
+                if (sb.close >= sb.open) {
+                  points.push(sb.open, sb.low, vwap, sb.high, sb.close);
+                } else {
+                  points.push(sb.open, sb.high, vwap, sb.low, sb.close);
+                }
+              } else {
+                if (sb.close >= sb.open) {
+                  points.push(sb.open, sb.low, sb.high, sb.close);
+                } else {
+                  points.push(sb.open, sb.high, sb.low, sb.close);
+                }
+              }
+            }
+            points.push(bar.close);
+
+            const segs: [number, number][] = [];
+            for (let pi = 0; pi < points.length - 1; pi++) {
+              const p0 = points[pi], p1 = points[pi + 1];
+              if (Math.abs(p1 - p0) > 1e-9) segs.push([p0, p1]);
+            }
+            bar.intrabarSegments = segs.length > 0 ? segs : pathSegments(bar.open, bar.high, bar.low, bar.close);
+          } else {
+            // Linear interpolation: chronological trajectory through sub-bar extrema
+            const points: number[] = [bar.open];
+            for (const sb of subBars) {
+              if (sb.close >= sb.open) {
+                points.push(sb.open, sb.low, sb.high, sb.close);
+              } else {
+                points.push(sb.open, sb.high, sb.low, sb.close);
+              }
+            }
+            points.push(bar.close);
+
+            const segs: [number, number][] = [];
+            for (let pi = 0; pi < points.length - 1; pi++) {
+              const p0 = points[pi], p1 = points[pi + 1];
+              if (Math.abs(p1 - p0) > 1e-9) segs.push([p0, p1]);
+            }
+            bar.intrabarSegments = segs.length > 0 ? segs : pathSegments(bar.open, bar.high, bar.low, bar.close);
+          }
+        } else {
+          bar.intrabarSegments = pathSegments(bar.open, bar.high, bar.low, bar.close);
+          bar.intrabarPointsCount = 0;
+        }
+      }
+
+      intrabarInterpolationApplied = {
+        method,
+        hfFileName: hfFile.name,
+        totalSubPoints,
+        avgPointsPerBar: parseFloat((totalSubPoints / Math.max(1, bars.length)).toFixed(1)),
+      };
+    } else {
+      // Single file fallback: generate high-resolution synthetic intrabar segments
+      for (const bar of bars) {
+        const segs: [number, number][] = [];
+        const base = pathSegments(bar.open, bar.high, bar.low, bar.close);
+        const stepsPerSeg = method === "volumetric" ? 4 : 3;
+        for (const [p0, p1] of base) {
+          for (let s = 0; s < stepsPerSeg; s++) {
+            const frac0 = s / stepsPerSeg;
+            const frac1 = (s + 1) / stepsPerSeg;
+            segs.push([p0 + frac0 * (p1 - p0), p0 + frac1 * (p1 - p0)]);
+          }
+        }
+        bar.intrabarSegments = segs;
+        bar.intrabarPointsCount = segs.length;
+        totalSubPoints += segs.length;
+      }
+      intrabarInterpolationApplied = {
+        method,
+        hfFileName: `${validFiles[priceFileIdx].name} (Sintetico ${method === "volumetric" ? "VWAP" : "Lineare"})`,
+        totalSubPoints,
+        avgPointsPerBar: parseFloat((totalSubPoints / Math.max(1, bars.length)).toFixed(1)),
+      };
+    }
+  }
+
+  return { bars, dropped, columns, perFileDiag, intrabarInterpolationApplied };
 }
 
 export function columnStats(bars: Bar[], columns: string[]): Record<string, ColumnStat> {

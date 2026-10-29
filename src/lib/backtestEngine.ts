@@ -61,6 +61,32 @@ export function intrabarFixedFractionEntry(
   return { price, remaining: [[price, c]] };
 }
 
+export function intrabarSegmentsFractionEntry(
+  segments: [number, number][],
+  frac: number
+): { price: number; remaining: [number, number][] } {
+  if (!segments || segments.length === 0) return { price: 0, remaining: [] };
+  const lens = segments.map(([a, b]) => Math.abs(b - a));
+  const total = lens.reduce((s, x) => s + x, 0);
+  if (total === 0) return { price: segments[0][0], remaining: segments };
+  const clampedFrac = Math.max(0, Math.min(1, frac));
+  const target = clampedFrac * total;
+  let acc = 0;
+  for (let idx = 0; idx < segments.length; idx++) {
+    const segLen = lens[idx];
+    if (acc + segLen >= target || idx === segments.length - 1) {
+      const within = segLen > 0 ? (target - acc) / segLen : 0;
+      const [a, b] = segments[idx];
+      const price = a + within * (b - a);
+      const remaining: [number, number][] = [[price, b], ...segments.slice(idx + 1)];
+      return { price, remaining };
+    }
+    acc += segLen;
+  }
+  const lastP = segments[segments.length - 1][1];
+  return { price: lastP, remaining: [[lastP, lastP]] };
+}
+
 export function intrabarFixedFractionExit(
   o: number,
   h: number,
@@ -249,9 +275,15 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     } else if (timing === "intrabar") {
       entryIdx = i;
       const frac = mm.intrabarFraction != null ? mm.intrabarFraction : 0.5;
-      const { price, remaining } = intrabarFixedFractionEntry(b.open, b.high, b.low, b.close, isLong, frac);
-      entryPriceRaw = price;
-      entryRemainingSegments = remaining;
+      if (b.intrabarSegments && b.intrabarSegments.length > 0) {
+        const { price, remaining } = intrabarSegmentsFractionEntry(b.intrabarSegments, frac);
+        entryPriceRaw = price;
+        entryRemainingSegments = remaining;
+      } else {
+        const { price, remaining } = intrabarFixedFractionEntry(b.open, b.high, b.low, b.close, isLong, frac);
+        entryPriceRaw = price;
+        entryRemainingSegments = remaining;
+      }
     } else {
       entryIdx = i + 1;
       entryPriceRaw = bars[entryIdx].open;
@@ -476,7 +508,7 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
 
         const touched = walkBarTouches(
           prevClose, barOpen, cb.high, cb.low, cb.close, active,
-          j === entryIdx && entryRemainingSegments ? entryRemainingSegments : undefined
+          j === entryIdx && entryRemainingSegments ? entryRemainingSegments : (cb.intrabarSegments || undefined)
         );
 
         for (const t of touched) {
