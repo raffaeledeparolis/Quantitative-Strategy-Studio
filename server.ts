@@ -77,8 +77,14 @@ function parseStrategyHeuristically(
   const defaultCol = nonPriceCols[0] || "close";
 
   // Build basic condition groups
+  // Build condition groups for entry and exit
   const longConditions: any[] = [];
   const shortConditions: any[] = [];
+  const exitLongConditions: any[] = [];
+  const exitShortConditions: any[] = [];
+
+  const exitKeywords = ["esci", "exit", "uscita", "chiudi posizione", "chiusura posizione"];
+  const firstExitIdx = exitKeywords.map((k) => text.indexOf(k)).filter((idx) => idx !== -1).sort((a, b) => a - b)[0] ?? -1;
 
   // Parse condition expressions like "col > val" or "col < val"
   for (const col of allCols) {
@@ -102,10 +108,20 @@ function parseStrategyHeuristically(
       const rightVal = isNaN(rightNum) ? rightRaw : rightNum;
       
       const cond = { type: "condition", left: col, op, right: rightVal };
-      if (text.includes("short") && match.index > text.indexOf("short")) {
-        shortConditions.push(cond);
+
+      const isAfterExit = firstExitIdx !== -1 && match.index >= firstExitIdx;
+      if (isAfterExit) {
+        if (text.includes("short") && match.index > text.lastIndexOf("short")) {
+          exitShortConditions.push(cond);
+        } else {
+          exitLongConditions.push(cond);
+        }
       } else {
-        longConditions.push(cond);
+        if (text.includes("short") && match.index > text.indexOf("short")) {
+          shortConditions.push(cond);
+        } else {
+          longConditions.push(cond);
+        }
       }
     }
   }
@@ -120,11 +136,33 @@ function parseStrategyHeuristically(
     ? { type: "condition", left: defaultCol, op: "<", right: columnStats?.[defaultCol]?.mean ?? 0 }
     : null;
 
+  const isAfterTp =
+    text.includes("dopo tp") ||
+    text.includes("dopo il tp") ||
+    text.includes("dopo primo tp") ||
+    text.includes("dopo il primo tp") ||
+    text.includes("after tp") ||
+    text.includes("dopo il raggiungimento di un tp") ||
+    text.includes("dopo il raggiungimento del tp") ||
+    text.includes("dopo aver colpito il tp");
+
+  const buildExitRule = (conds: any[]) => {
+    if (conds.length === 0) return null;
+    const condNode = conds.length === 1 ? conds[0] : { type: "group", operator: "AND", conditions: conds };
+    if (isAfterTp) {
+      return { condition: condNode, close_pct: 100, after_tp1: true };
+    }
+    return condNode;
+  };
+
+  const exitLong = buildExitRule(exitLongConditions);
+  const exitShort = buildExitRule(exitShortConditions);
+
   return {
     entry_long: entryLong,
     entry_short: entryShort,
-    exit_long: null,
-    exit_short: null,
+    exit_long: exitLong,
+    exit_short: exitShort,
     atr_column: atrCol,
     stop_loss: stopLoss,
     take_profits: takeProfits,
@@ -208,15 +246,17 @@ Schema atteso (esattamente questi campi):
   "notes": "breve spiegazione in italiano (max 3 frasi) di come hai interpretato la strategia, comprese eventuali ambiguità o assunzioni"
 }
 
-ExitRuleNode (Uscita su segnale con possibilità di chiusura parziale):
+ExitRuleNode (Uscita su segnale con possibilità di chiusura parziale e attivazione post-TP1):
   - Uscita totale (100%): <ConditionNode>
   - Uscita con percentuale definita (es. chiudi il 50% della posizione su segnale):
       {"condition": <ConditionNode>, "close_pct": 50}
       oppure: {"type": "condition", "left": "...", "op": "...", "right": "...", "close_pct": 50}
+  - Uscita su indicatore attivata SOLO DOPO il raggiungimento del primo Take Profit (TP1):
+      {"condition": <ConditionNode>, "close_pct": 100, "after_tp1": true}
   - Uscite multiple progressive su segnali diversi:
       [
         {"condition": <ConditionNode>, "close_pct": 50},
-        {"condition": <ConditionNode>, "close_pct": 100}
+        {"condition": <ConditionNode>, "close_pct": 100, "after_tp1": true}
       ]
 
 StopLossNode:

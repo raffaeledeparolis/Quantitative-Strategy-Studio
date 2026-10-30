@@ -2,13 +2,23 @@ import { ConditionNode, ExitRuleNode, SignalExitRule, StrategyRules } from "../t
 
 export function evalNode(node: ConditionNode | null | undefined, bar: Record<string, any>): boolean {
   if (!node) return false;
-  if (node.type === "condition") {
+  if (node.type === "condition" || (node.left !== undefined && node.op !== undefined)) {
     const resolveVal = (valOrCol: any) => {
       if (typeof valOrCol === "number") return valOrCol;
       if (typeof valOrCol === "string") {
         if (bar[valOrCol] !== undefined && typeof bar[valOrCol] === "number") return bar[valOrCol];
         const lower = valOrCol.toLowerCase();
         if (bar[lower] !== undefined && typeof bar[lower] === "number") return bar[lower];
+        for (const k of Object.keys(bar)) {
+          if (k.toLowerCase() === lower && typeof bar[k] === "number") {
+            return bar[k];
+          }
+        }
+        const trimmed = valOrCol.trim();
+        if (trimmed !== "") {
+          const parsed = Number(trimmed);
+          if (!isNaN(parsed)) return parsed;
+        }
       }
       return undefined;
     };
@@ -25,7 +35,7 @@ export function evalNode(node: ConditionNode | null | undefined, bar: Record<str
       default: return false;
     }
   }
-  if (node.type === "group") {
+  if (node.type === "group" || (Array.isArray((node as any).conditions) && (node as any).conditions.length > 0)) {
     const fn = node.operator === "OR" ? "some" : "every";
     return (node.conditions || [])[fn]((c) => evalNode(c, bar));
   }
@@ -34,23 +44,39 @@ export function evalNode(node: ConditionNode | null | undefined, bar: Record<str
 
 export function renderNode(node: ConditionNode | null | undefined): string {
   if (!node) return "—";
-  if (node.type === "condition") return `${node.left} ${node.op} ${node.right}`;
-  if (node.type === "group") return `(${(node.conditions || []).map(renderNode).join(` ${node.operator} `)})`;
+  if (node.type === "condition" || (node.left !== undefined && node.op !== undefined)) {
+    return `${node.left} ${node.op} ${node.right}`;
+  }
+  if (node.type === "group" || Array.isArray(node.conditions)) {
+    return `(${(node.conditions || []).map(renderNode).join(` ${node.operator || "AND"} `)})`;
+  }
   return "—";
 }
 
-export function normalizeExitRules(exitRule: any): { condition: ConditionNode; close_pct: number }[] {
+export function normalizeExitRules(exitRule: any): { condition: ConditionNode; close_pct: number; after_tp1?: boolean }[] {
   if (!exitRule) return [];
   const list = Array.isArray(exitRule) ? exitRule : [exitRule];
-  const normalized: { condition: ConditionNode; close_pct: number }[] = [];
+  const normalized: { condition: ConditionNode; close_pct: number; after_tp1?: boolean }[] = [];
   for (const item of list) {
     if (!item) continue;
+    const isAfterTp1 = Boolean(
+      item.after_tp1 ||
+      item.after_tp ||
+      item.requires_tp1 ||
+      item.requires_tp ||
+      item.condition?.after_tp1 ||
+      item.condition?.after_tp
+    );
     if (item.condition && typeof item.condition === "object") {
       const closePct = typeof item.close_pct === "number" && item.close_pct > 0 ? item.close_pct : 100;
-      normalized.push({ condition: item.condition, close_pct: closePct });
-    } else if (item.type === "condition" || item.type === "group") {
+      const cond = { ...item.condition };
+      if (!cond.type && cond.left !== undefined && cond.op !== undefined) cond.type = "condition";
+      normalized.push({ condition: cond, close_pct: closePct, after_tp1: isAfterTp1 });
+    } else if (item.type === "condition" || item.type === "group" || (item.left !== undefined && item.op !== undefined)) {
       const closePct = typeof item.close_pct === "number" && item.close_pct > 0 ? item.close_pct : 100;
-      normalized.push({ condition: item, close_pct: closePct });
+      const cond = { ...item };
+      if (!cond.type && cond.left !== undefined && cond.op !== undefined) cond.type = "condition";
+      normalized.push({ condition: cond, close_pct: closePct, after_tp1: isAfterTp1 });
     }
   }
   return normalized;
@@ -62,20 +88,21 @@ export function renderExitRule(rule: ExitRuleNode): string {
   return norm
     .map((item) => {
       const condStr = renderNode(item.condition);
-      if (item.close_pct < 100) {
-        return `Chiudi ${item.close_pct}% se ${condStr}`;
+      let text = item.close_pct < 100 ? `Chiudi ${item.close_pct}% se ${condStr}` : condStr;
+      if (item.after_tp1) {
+        text += " (solo dopo TP1)";
       }
-      return condStr;
+      return text;
     })
     .join(" | ");
 }
 
 export function collectColumnsUsed(node: ConditionNode | null | undefined, set: Set<string>) {
   if (!node) return;
-  if (node.type === "condition") {
-    if (typeof node.left === "string") set.add(node.left);
-    if (typeof node.right === "string") set.add(node.right);
-  } else if (node.type === "group") {
+  if (node.type === "condition" || (node.left !== undefined && node.op !== undefined)) {
+    if (typeof node.left === "string" && isNaN(Number(node.left))) set.add(node.left);
+    if (typeof node.right === "string" && isNaN(Number(node.right))) set.add(node.right);
+  } else if (node.type === "group" || Array.isArray(node.conditions)) {
     (node.conditions || []).forEach((c) => collectColumnsUsed(c, set));
   }
 }
@@ -272,9 +299,14 @@ export function parseStrategyHeuristically(
   const nonPriceCols = allCols.filter((c) => !["open", "high", "low", "close"].includes(c));
   const defaultCol = nonPriceCols[0] || "close";
 
-  // Build basic condition groups
+  // Build condition groups for entry and exit
   const longConditions: any[] = [];
   const shortConditions: any[] = [];
+  const exitLongConditions: any[] = [];
+  const exitShortConditions: any[] = [];
+
+  const exitKeywords = ["esci", "exit", "uscita", "chiudi posizione", "chiusura posizione"];
+  const firstExitIdx = exitKeywords.map((k) => text.indexOf(k)).filter((idx) => idx !== -1).sort((a, b) => a - b)[0] ?? -1;
 
   // Parse condition expressions like "col > val" or "col < val"
   for (const col of allCols) {
@@ -298,10 +330,20 @@ export function parseStrategyHeuristically(
       const rightVal = isNaN(rightNum) ? rightRaw : rightNum;
 
       const cond = { type: "condition" as const, left: col, op, right: rightVal };
-      if (text.includes("short") && match.index > text.indexOf("short")) {
-        shortConditions.push(cond);
+
+      const isAfterExit = firstExitIdx !== -1 && match.index >= firstExitIdx;
+      if (isAfterExit) {
+        if (text.includes("short") && match.index > text.lastIndexOf("short")) {
+          exitShortConditions.push(cond);
+        } else {
+          exitLongConditions.push(cond);
+        }
       } else {
-        longConditions.push(cond);
+        if (text.includes("short") && match.index > text.indexOf("short")) {
+          shortConditions.push(cond);
+        } else {
+          longConditions.push(cond);
+        }
       }
     }
   }
@@ -322,11 +364,33 @@ export function parseStrategyHeuristically(
       ? { type: "condition", left: defaultCol, op: "<", right: columnStats?.[defaultCol]?.mean ?? 0 }
       : null;
 
+  const isAfterTp =
+    text.includes("dopo tp") ||
+    text.includes("dopo il tp") ||
+    text.includes("dopo primo tp") ||
+    text.includes("dopo il primo tp") ||
+    text.includes("after tp") ||
+    text.includes("dopo il raggiungimento di un tp") ||
+    text.includes("dopo il raggiungimento del tp") ||
+    text.includes("dopo aver colpito il tp");
+
+  const buildExitRule = (conds: any[]) => {
+    if (conds.length === 0) return null;
+    const condNode = conds.length === 1 ? conds[0] : { type: "group", operator: "AND", conditions: conds };
+    if (isAfterTp) {
+      return { condition: condNode, close_pct: 100, after_tp1: true };
+    }
+    return condNode;
+  };
+
+  const exitLong: any = buildExitRule(exitLongConditions);
+  const exitShort: any = buildExitRule(exitShortConditions);
+
   return {
     entry_long: entryLong,
     entry_short: entryShort,
-    exit_long: null,
-    exit_short: null,
+    exit_long: exitLong,
+    exit_short: exitShort,
     atr_column: atrCol,
     stop_loss: stopLoss,
     take_profits: takeProfits,

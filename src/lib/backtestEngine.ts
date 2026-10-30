@@ -273,8 +273,8 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
   let equity = mm.initialCapital;
   const half = (mm.spread || 0) / 2;
   const pointVal = mm.pointValue && mm.pointValue > 0 ? mm.pointValue : 1.0;
-  const timing = mm.entryTiming || rules.entry_timing || "next_open";
-  const exitTiming = mm.exitTiming || rules.exit_timing || "next_open";
+  const timing = rules.entry_timing || mm.entryTiming || "next_open";
+  const exitTiming = rules.exit_timing || mm.exitTiming || "next_open";
   const exitFrac = mm.intrabarExitFraction != null ? mm.intrabarExitFraction : 0.5;
   const atpConfig = rules.after_tp1_sl || "original";
 
@@ -488,9 +488,13 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
     let trailBestPrice = entryPrice;
     let maxPriceWhileInTrade = entryPrice;
     let minPriceWhileInTrade = entryPrice;
-    const signalExitRules = normalizeExitRules(direction === "long" ? rules.exit_long : rules.exit_short).map((r, idx) => ({
+    const rawExitRules = direction === "long"
+      ? (rules.exit_long ?? (rules as any).exitLong ?? (rules as any).exit_rules_long ?? (rules as any).exit_rules ?? (rules as any).exit_signal)
+      : (rules.exit_short ?? (rules as any).exitShort ?? (rules as any).exit_rules_short ?? (rules as any).exit_rules ?? (rules as any).exit_signal);
+    const signalExitRules = normalizeExitRules(rawExitRules).map((r, idx) => ({
       condition: r.condition,
       closePct: r.close_pct,
+      after_tp1: Boolean(r.after_tp1),
       hit: false,
       idx,
     }));
@@ -662,6 +666,9 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
 
       if (signalExitRules.length > 0 && qtyRemaining > 1e-9) {
         for (const sig of signalExitRules) {
+          if (sig.after_tp1 && !tp1Hit) {
+            continue;
+          }
           if (!sig.hit && evalNode(sig.condition, cb)) {
             sig.hit = true;
             if (exitTiming === "intrabar" || exitTiming === "same_close") {
@@ -713,21 +720,56 @@ export function runBacktest(bars: Bar[], rules: StrategyRules, mm: MoneyManageme
 
     if (!closed) {
       const lastBar = bars[Math.min(j, N - 1)];
-      const fill = direction === "long" ? lastBar.close - half : lastBar.close + half;
-      maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
-      minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
-      const qtyAtTimeout = qtyRemaining;
-      const legPnl = qtyAtTimeout * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
-      pnlTrade += legPnl;
-      qtyRemaining = 0;
-      const hadExitSignal = legs.some((l) => l.reason.startsWith("ExitSignal"));
-      exitReason = tp1Hit
-        ? "Timeout_dopo_" + (lastTpHitLabel || "TP")
-        : hadExitSignal
-        ? "Timeout_dopo_ExitSignal"
-        : "Timeout";
-      legs.push({ reason: exitReason, dt: lastBar.dt, price: fill, qty: qtyAtTimeout, pctOfPosition: (qtyAtTimeout / qtyTotal) * 100, pnl: legPnl });
-      exitDt = lastBar.dt;
+
+      if (pendingSignalExits.length > 0 && qtyRemaining > 1e-9) {
+        const exitPx = lastBar.open;
+        const fill = direction === "long" ? exitPx - half : exitPx + half;
+        maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+        minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
+        for (const pending of pendingSignalExits) {
+          if (qtyRemaining <= 1e-9) break;
+          const q = pending.closePct >= 100 ? qtyRemaining : Math.min(qtyTotal * (pending.closePct / 100), qtyRemaining);
+          if (q > 1e-9) {
+            const legPnl = q * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
+            pnlTrade += legPnl;
+            qtyRemaining -= q;
+            const legLabel = pending.closePct < 100 ? `ExitSignal_${pending.closePct}%` : "ExitSignal";
+            legs.push({
+              reason: legLabel,
+              dt: lastBar.dt,
+              price: fill,
+              qty: q,
+              pctOfPosition: (q / qtyTotal) * 100,
+              pnl: legPnl,
+            });
+            if (qtyRemaining <= 1e-9) {
+              exitReason = legLabel;
+              exitDt = lastBar.dt;
+              closed = true;
+              break;
+            }
+          }
+        }
+        pendingSignalExits = [];
+      }
+
+      if (!closed && qtyRemaining > 1e-9) {
+        const fill = direction === "long" ? lastBar.close - half : lastBar.close + half;
+        maxPriceWhileInTrade = Math.max(maxPriceWhileInTrade, fill);
+        minPriceWhileInTrade = Math.min(minPriceWhileInTrade, fill);
+        const qtyAtTimeout = qtyRemaining;
+        const legPnl = qtyAtTimeout * (direction === "long" ? fill - entryPrice : entryPrice - fill) * pointVal;
+        pnlTrade += legPnl;
+        qtyRemaining = 0;
+        const hadExitSignal = legs.some((l) => l.reason.startsWith("ExitSignal"));
+        exitReason = tp1Hit
+          ? "Timeout_dopo_" + (lastTpHitLabel || "TP")
+          : hadExitSignal
+          ? "Timeout_dopo_ExitSignal"
+          : "Timeout";
+        legs.push({ reason: exitReason, dt: lastBar.dt, price: fill, qty: qtyAtTimeout, pctOfPosition: (qtyAtTimeout / qtyTotal) * 100, pnl: legPnl });
+        exitDt = lastBar.dt;
+      }
       j = Math.min(j, N - 1);
     }
 

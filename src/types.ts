@@ -6,11 +6,13 @@ export interface ConditionNode {
   operator?: "AND" | "OR";
   conditions?: ConditionNode[];
   close_pct?: number;
+  after_tp1?: boolean;
 }
 
 export interface SignalExitRule {
   condition: ConditionNode;
   close_pct?: number;
+  after_tp1?: boolean;
 }
 
 export type ExitRuleNode =
